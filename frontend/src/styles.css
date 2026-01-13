@@ -78,3 +78,7 @@ button[disabled]{opacity:.6;cursor:not-allowed}
   .form-grid{grid-template-columns:1fr}
   .grid{grid-template-columns:1fr}
 }
+
+/* Placeholder for empty states */
+.placeholder{background:#f8fafc;border:1px solid #eef2ff;color:#6b7280;padding:12px;border-radius:8px}
+.placeholder svg, .placeholder .icon{margin-right:8px}
