@@ -235,4 +235,4 @@ Having issues? Check these resources:
 
 ---
 
-Made with ❤️ for automated meeting management
+Made with ❤️ by Abhijith Benny
