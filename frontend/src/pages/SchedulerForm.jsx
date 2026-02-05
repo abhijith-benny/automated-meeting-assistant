@@ -43,7 +43,7 @@ export default function SchedulerForm() {
     try {
       // Hardcoded paths - update these to match your system
       const braveExecutable = 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe'
-      const userDataDir = 'C:\\Users\\hp\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data\\Default'
+      const userDataDir = 'C:\\Users\\abhij\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data\\Default'
 
       const result = await meetingAPI.start({
         url: meetingLink,
@@ -241,7 +241,7 @@ export default function SchedulerForm() {
           <li>🎥 Camera automatically turned off</li>
           <li>🎤 Microphone automatically muted</li>
           <li>⏰ Schedule meetings for automatic joining</li>
-          <li>🤖 Uses keyboard shortcuts (Ctrl+D and Ctrl+E) for reliable control</li>
+          
         </ul>
       </div>
 
@@ -252,7 +252,7 @@ export default function SchedulerForm() {
         </p>
         <ul style={{ fontSize: '11px', margin: '8px 0', paddingLeft: '20px', color: '#6b7280', fontFamily: 'monospace' }}>
           <li>C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe</li>
-          <li>C:\Users\hp\AppData\Local\BraveSoftware\Brave-Browser\User Data\Default</li>
+          <li>C:\Users\abhij\AppData\Local\BraveSoftware\Brave-Browser\User Data\Default</li>
         </ul>
       </div>
     </div>

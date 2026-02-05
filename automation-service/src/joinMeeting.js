@@ -57,64 +57,110 @@ const fs = require('fs');
     await page.goto(meetUrl, { waitUntil: 'domcontentloaded' });
     console.log('✅ Page loaded');
 
-    // Give Meet time to load
-    console.log('⏳ Waiting for Google Meet to initialize...');
-    await page.waitForTimeout(5000);
+    // Wait for Google Meet interface to load - more robust than fixed timeout
+    console.log('⏳ Waiting for Google Meet interface to load...');
+    try {
+      // Wait for either the join button or the meeting controls to appear
+      await page.waitForFunction(() => {
+        return document.querySelector('[role="button"][aria-label*="join"], [role="button"][aria-label*="Join"], [data-testid*="join"]') ||
+               document.querySelector('[role="button"][aria-label*="camera"], [role="button"][aria-label*="microphone"]');
+      }, { timeout: 15000 });
+      console.log('✅ Google Meet interface detected');
+    } catch (err) {
+      console.log('⚠️  Could not detect Meet interface within 15s, proceeding anyway');
+    }
+
+    // Additional small wait for stability
+    await page.waitForTimeout(2000);
 
     console.log('🎤📹 Disabling camera and microphone...');
     
-    // Turn off camera - using exact selector from Playwright codegen
+    // Use keyboard shortcuts first for reliability (they don't depend on UI loading)
+    try {
+      await page.keyboard.press('Control+KeyE'); // Turn off camera
+      console.log('✅ Camera turned off via Ctrl+E');
+      await page.waitForTimeout(500);
+    } catch (err) {
+      console.log('⚠️  Camera keyboard shortcut failed:', err.message);
+    }
+
+    try {
+      await page.keyboard.press('Control+KeyD'); // Turn off microphone
+      console.log('✅ Microphone turned off via Ctrl+D');
+      await page.waitForTimeout(500);
+    } catch (err) {
+      console.log('⚠️  Microphone keyboard shortcut failed:', err.message);
+    }
+
+    // As backup, try clicking buttons if they exist
     try {
       const cameraButton = page.getByRole('button', { name: 'Turn off camera' });
-      await cameraButton.click({ timeout: 3000 });
-      console.log('✅ Camera turned off');
-      await page.waitForTimeout(500);
-    } catch (err) {
-      console.log('⚠️  Camera button not found or already off:', err.message);
-      // Try keyboard shortcut as backup
-      try {
-        await page.keyboard.press('Control+KeyE');
-        console.log('✅ Used Ctrl+E for camera');
-        await page.waitForTimeout(500);
-      } catch (e) {
-        console.log('⚠️  Camera control failed');
+      if (await cameraButton.isVisible({ timeout: 1000 })) {
+        await cameraButton.click();
+        console.log('✅ Camera button clicked as backup');
       }
+    } catch (err) {
+      console.log('ℹ️  Camera button not found or not needed');
     }
 
-    // Turn off microphone - using exact selector from Playwright codegen
     try {
       const micButton = page.getByRole('button', { name: 'Turn off microphone' });
-      await micButton.click({ timeout: 3000 });
-      console.log('✅ Microphone turned off');
-      await page.waitForTimeout(500);
+      if (await micButton.isVisible({ timeout: 1000 })) {
+        await micButton.click();
+        console.log('✅ Microphone button clicked as backup');
+      }
     } catch (err) {
-      console.log('⚠️  Microphone button not found or already off:', err.message);
-      // Try keyboard shortcut as backup
+      console.log('ℹ️  Microphone button not found or not needed');
+    }
+
+    // Ask to join - try multiple button variations
+    console.log('🚪 Attempting to join meeting...');
+    let joined = false;
+
+    // Try different button selectors in order of preference
+    const joinSelectors = [
+      { role: 'button', name: 'Ask to join' },
+      { role: 'button', name: 'Join now' },
+      { role: 'button', name: 'Join' },
+    ];
+
+    for (const selector of joinSelectors) {
+      if (joined) break;
+
       try {
-        await page.keyboard.press('Control+KeyD');
-        console.log('✅ Used Ctrl+D for microphone');
-        await page.waitForTimeout(500);
-      } catch (e) {
-        console.log('⚠️  Microphone control failed');
+        const button = page.getByRole(selector.role, { name: selector.name });
+        await button.click({ timeout: 3000 });
+        console.log(`✅ Joined using "${selector.name}" button`);
+        joined = true;
+        await page.waitForTimeout(1000); // Wait for join action to process
+      } catch (err) {
+        console.log(`⚠️  "${selector.name}" button not found or failed:`, err.message);
       }
     }
 
-    // Ask to join - using exact selector from Playwright codegen
-    console.log('🚪 Clicking "Ask to join"...');
-    try {
-      const joinButton = page.getByRole('button', { name: 'Ask to join' });
-      await joinButton.click({ timeout: 5000 });
-      console.log('✅ "Ask to join" button clicked');
-    } catch (err) {
-      console.log('⚠️  Join button not found:', err.message);
-      // Try alternative text
+    // As a last resort, try pressing Enter key or look for any button with "join" text
+    if (!joined) {
       try {
-        const altJoinButton = page.getByRole('button', { name: 'Join now' });
-        await altJoinButton.click({ timeout: 3000 });
-        console.log('✅ "Join now" button clicked');
-      } catch (e) {
-        console.log('⚠️  Could not click join button - you may need to click it manually');
+        // Try to find any button containing "join" (case insensitive)
+        const anyJoinButton = page.locator('button').filter({ hasText: /join/i });
+        await anyJoinButton.first().click({ timeout: 3000 });
+        console.log('✅ Found and clicked a button containing "join"');
+        joined = true;
+      } catch (err) {
+        console.log('⚠️  No join button found with text search:', err.message);
+        // Final fallback: Enter key
+        try {
+          await page.keyboard.press('Enter');
+          console.log('✅ Pressed Enter key as final fallback');
+          joined = true;
+        } catch (enterErr) {
+          console.log('⚠️  Enter key failed:', enterErr.message);
+        }
       }
+    }
+
+    if (!joined) {
+      console.log('⚠️  Could not automatically join - you may need to click the join button manually');
     }
 
     console.log('');
