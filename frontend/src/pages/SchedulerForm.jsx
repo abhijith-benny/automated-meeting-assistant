@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react'
+import DatePicker from 'react-datepicker'
+import 'react-datepicker/dist/react-datepicker.css'
 import * as meetingAPI from '../api/meeting'
 
 export default function SchedulerForm() {
   const [link, setLink] = useState('')
-  const [scheduledTime, setScheduledTime] = useState('')
+  const [scheduledTime, setScheduledTime] = useState(null)
   const [status, setStatus] = useState('idle') // idle, scheduled, joining, success, error
   const [message, setMessage] = useState('')
   const [scheduledMeetings, setScheduledMeetings] = useState([])
@@ -41,9 +43,9 @@ export default function SchedulerForm() {
     setMessage(scheduledId ? `⏰ Time to join! Starting browser...` : 'Joining meeting...')
 
     try {
-      // Hardcoded paths - update these to match your system
-      const braveExecutable = 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe'
-      const userDataDir = 'C:\\Users\\abhij\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data\\Default'
+      // Ubuntu paths for Brave browser
+      const braveExecutable = '/usr/bin/brave-browser'
+      const userDataDir = '/home/abhijith/.config/BraveSoftware/Brave-Browser/Default'
 
       const result = await meetingAPI.start({
         url: meetingLink,
@@ -59,7 +61,7 @@ export default function SchedulerForm() {
       setTimeout(() => {
         if (!scheduledId) {
           setLink('')
-          setScheduledTime('')
+          setScheduledTime(null)
         }
         setStatus('idle')
         setMessage('')
@@ -88,7 +90,7 @@ export default function SchedulerForm() {
 
     // If time is specified and in the future, schedule it
     if (scheduledTime) {
-      const meetingTime = new Date(scheduledTime)
+      const meetingTime = scheduledTime
       const now = new Date()
       
       if (meetingTime <= now) {
@@ -100,7 +102,7 @@ export default function SchedulerForm() {
       const newMeeting = {
         id: Date.now().toString(),
         link,
-        time: scheduledTime,
+        time: meetingTime.toISOString(),
         joined: false
       }
       
@@ -110,7 +112,7 @@ export default function SchedulerForm() {
       
       // Clear form
       setLink('')
-      setScheduledTime('')
+      setScheduledTime(null)
       
       // Clear message after 3 seconds
       setTimeout(() => {
@@ -146,11 +148,18 @@ export default function SchedulerForm() {
 
         <div className="field">
           <label>Schedule Time (Optional)</label>
-          <input 
-            type="datetime-local"
-            value={scheduledTime} 
-            onChange={(e) => setScheduledTime(e.target.value)} 
+          <DatePicker
+            selected={scheduledTime}
+            onChange={(date) => setScheduledTime(date)}
+            showTimeSelect
+            timeFormat="HH:mm"
+            timeIntervals={15}
+            timeCaption="Time"
+            dateFormat="MMMM d, yyyy h:mm aa"
+            placeholderText="Click to select date and time"
             disabled={status === 'joining'}
+            className="datepicker-input"
+            minDate={new Date()}
           />
           <small style={{ color: '#6b7280', fontSize: '12px', marginTop: '4px', display: 'block' }}>
             Leave empty to join immediately, or set a time to join automatically later
@@ -176,7 +185,7 @@ export default function SchedulerForm() {
           {link && status !== 'joining' && (
             <button type="button" className="secondary" onClick={() => {
               setLink('')
-              setScheduledTime('')
+              setScheduledTime(null)
               setStatus('idle')
               setMessage('')
             }}>
@@ -251,8 +260,8 @@ export default function SchedulerForm() {
           Browser paths are configured in the code. Current settings:
         </p>
         <ul style={{ fontSize: '11px', margin: '8px 0', paddingLeft: '20px', color: '#6b7280', fontFamily: 'monospace' }}>
-          <li>C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe</li>
-          <li>C:\Users\abhij\AppData\Local\BraveSoftware\Brave-Browser\User Data\Default</li>
+          <li>/usr/bin/brave-browser</li>
+          <li>/home/abhijith/.config/BraveSoftware/Brave-Browser/Default</li>
         </ul>
       </div>
     </div>

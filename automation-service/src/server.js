@@ -71,7 +71,7 @@ app.post('/api/meetings', (req, res) => {
       fs.mkdirSync(logsDir, { recursive: true });
     }
 
-    const child = spawn(process.execPath, args, {
+    const child = spawn('xvfb-run', ['-a', process.execPath, ...args], {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

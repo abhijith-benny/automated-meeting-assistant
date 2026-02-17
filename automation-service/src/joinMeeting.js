@@ -1,5 +1,88 @@
 const { chromium } = require('playwright');
+const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
+
+let recorderProcess = null;
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function startRecording() {
+  console.log('🎙️  Starting audio recording with ffmpeg...');
+  if (recorderProcess) {
+    console.log('ℹ️  Recording already running, skipping new start');
+    return;
+  }
+
+  const recordingsDir = path.join(__dirname, '..', '..', 'logs', 'recordings');
+  ensureDir(recordingsDir);
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const outputPath = path.join(recordingsDir, `meeting-${ts}.wav`);
+
+  const args = ['-f', 'pulse', '-i', 'meeting_sink.monitor', outputPath];
+  const recorder = spawn('ffmpeg', args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  recorder.stdout.on('data', (data) => {
+    console.log(`ffmpeg: ${data.toString().trim()}`);
+  });
+
+  recorder.stderr.on('data', (data) => {
+    console.log(`ffmpeg: ${data.toString().trim()}`);
+  });
+
+  recorder.on('error', (err) => {
+    console.error('❌ Failed to start ffmpeg:', err.message);
+  });
+
+  recorder.on('spawn', () => {
+    console.log(`✅ ffmpeg started (pid=${recorder.pid})`);
+    console.log(`💾 Recording to: ${outputPath}`);
+  });
+
+  recorderProcess = recorder;
+}
+
+function stopRecording(reason) {
+  if (!recorderProcess) return;
+
+  console.log(`🛑 Stopping recording (${reason})...`);
+  try {
+    recorderProcess.kill('SIGINT');
+  } catch (err) {
+    console.error('❌ Failed to stop ffmpeg:', err.message);
+  } finally {
+    recorderProcess = null;
+  }
+}
+
+async function waitForMeetingEnd(page) {
+  console.log('🕒 Waiting for meeting to end...');
+
+  try {
+    await page.waitForFunction(() => {
+      const text = document.body ? document.body.innerText : '';
+      const lowered = text.toLowerCase();
+
+      return (
+        lowered.includes('you left the meeting') ||
+        lowered.includes('meeting has ended') ||
+        lowered.includes('return to home screen') ||
+        lowered.includes('you have left the meeting')
+      );
+    }, { timeout: 0, polling: 2000 });
+
+    console.log('✅ Meeting end detected');
+  } catch (err) {
+    console.log('⚠️  Meeting end watcher stopped:', err.message);
+  }
+}
 
 (async () => {
   try {
@@ -52,6 +135,10 @@ const fs = require('fs');
 
     const page = await context.newPage();
     console.log('📄 New page created');
+
+    page.on('close', () => {
+      stopRecording('page closed');
+    });
 
     console.log('🌐 Navigating to meeting:', meetUrl);
     await page.goto(meetUrl, { waitUntil: 'domcontentloaded' });
@@ -132,6 +219,7 @@ const fs = require('fs');
         await button.click({ timeout: 3000 });
         console.log(`✅ Joined using "${selector.name}" button`);
         joined = true;
+        startRecording();
         await page.waitForTimeout(1000); // Wait for join action to process
       } catch (err) {
         console.log(`⚠️  "${selector.name}" button not found or failed:`, err.message);
@@ -146,6 +234,7 @@ const fs = require('fs');
         await anyJoinButton.first().click({ timeout: 3000 });
         console.log('✅ Found and clicked a button containing "join"');
         joined = true;
+        startRecording();
       } catch (err) {
         console.log('⚠️  No join button found with text search:', err.message);
         // Final fallback: Enter key
@@ -153,6 +242,7 @@ const fs = require('fs');
           await page.keyboard.press('Enter');
           console.log('✅ Pressed Enter key as final fallback');
           joined = true;
+          startRecording();
         } catch (enterErr) {
           console.log('⚠️  Enter key failed:', enterErr.message);
         }
@@ -161,6 +251,12 @@ const fs = require('fs');
 
     if (!joined) {
       console.log('⚠️  Could not automatically join - you may need to click the join button manually');
+    } else {
+      process.on('SIGINT', () => stopRecording('process interrupted'));
+      process.on('SIGTERM', () => stopRecording('process terminated'));
+
+      await waitForMeetingEnd(page);
+      stopRecording('meeting ended');
     }
 
     console.log('');

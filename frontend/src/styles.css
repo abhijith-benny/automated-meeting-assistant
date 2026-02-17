@@ -27,7 +27,7 @@ h1{margin:0 0 16px;font-size:20px}
 .form-grid .field{margin-bottom:0}
 .field{margin-bottom:12px}
 .field label{display:block;font-weight:700;margin-bottom:8px;font-size:13px}
-.field input[type=text], .field input[type=datetime-local], .field select{width:100%;padding:10px;border-radius:8px;border:1px solid #e6e9ef;background:#fbfdff}
+.field input[type=text], .field input[type=datetime-local], .field select, .datepicker-input{width:100%;padding:10px;border-radius:8px;border:1px solid #e6e9ef;background:#fbfdff}
 .note{font-size:12px;color:var(--muted);margin-top:6px}
 
 /* Focus and hover states */
@@ -82,3 +82,8 @@ button[disabled]{opacity:.6;cursor:not-allowed}
 /* Placeholder for empty states */
 .placeholder{background:#f8fafc;border:1px solid #eef2ff;color:#6b7280;padding:12px;border-radius:8px}
 .placeholder svg, .placeholder .icon{margin-right:8px}
+
+/* DatePicker styles */
+.datepicker-input:focus{outline:none;box-shadow:0 6px 14px rgba(37,99,235,0.06);border-color:var(--accent-600)}
+.react-datepicker-wrapper{width:100%}
+.react-datepicker__input-container input{width:100%}
