@@ -139,3 +139,4 @@ pids/
 *.pid
 *.seed
 *.pid.lock
+*.wav
