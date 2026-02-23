@@ -50,6 +50,11 @@ function startRecording(meetingId) {
     console.log(`💾 Recording to: ${outputPath}`);
   });
 
+  // Log chosen audio capture settings
+  console.log('🎚️  Selected audio source: alsa_output.pci-0000_00_05.0.analog-stereo.monitor');
+  console.log('🎛️  Sample rate: 16000 Hz');
+  console.log('🔊 Channels: 1 (mono)');
+
   recorderProcess = recorder;
   currentRecordingPath = outputPath;
   currentMeetingId = meetingId;
