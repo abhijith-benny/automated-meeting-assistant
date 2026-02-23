@@ -28,8 +28,24 @@ function startRecording(meetingId) {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const outputPath = path.join(recordingsDir, `meeting-${ts}.wav`);
 
-  const args = ['-f', 'pulse', '-i', 'meeting_sink.monitor', outputPath];
-  const recorder = spawn('ffmpeg', args, {
+  // Whisper-optimised: mono, 16 kHz, 16-bit PCM, WAV
+  const monitorSource = 'alsa_output.pci-0000_00_05.0.analog-stereo.monitor';
+  const ffmpegArgs = [
+    '-f', 'pulse',
+    '-i', monitorSource,
+    '-ac', '1',
+    '-ar', '16000',
+    '-c:a', 'pcm_s16le',
+    outputPath,
+  ];
+
+  console.log(`🎚️  Monitor source : ${monitorSource}`);
+  console.log(`🎛️  Sample rate    : 16000 Hz`);
+  console.log(`🔊 Channels       : 1 (mono)`);
+  console.log(`📂 Output file    : ${outputPath}`);
+  console.log(`🛠️  ffmpeg args    : ${JSON.stringify(ffmpegArgs)}`);
+
+  const recorder = spawn('ffmpeg', ffmpegArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -49,11 +65,6 @@ function startRecording(meetingId) {
     console.log(`✅ ffmpeg started (pid=${recorder.pid})`);
     console.log(`💾 Recording to: ${outputPath}`);
   });
-
-  // Log chosen audio capture settings
-  console.log('🎚️  Selected audio source: alsa_output.pci-0000_00_05.0.analog-stereo.monitor');
-  console.log('🎛️  Sample rate: 16000 Hz');
-  console.log('🔊 Channels: 1 (mono)');
 
   recorderProcess = recorder;
   currentRecordingPath = outputPath;
