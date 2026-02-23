@@ -110,16 +110,24 @@ async def transcribe(request: TranscribeRequest):
 		duration_seconds = time.perf_counter() - start_time
 		transcript = (result.get("text") or "").strip()
 
-		if not transcript:
-			raise HTTPException(
-				status_code=500,
-				detail="Transcription completed but returned empty text.",
-			)
-
 		TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 		safe_meeting_id = _sanitize_meeting_id(request.meetingId)
 		output_file = TRANSCRIPTS_DIR / f"meeting_{safe_meeting_id}.txt"
 		output_file.write_text(transcript, encoding="utf-8")
+
+		if not transcript:
+			logger.warning(
+				"Transcription completed with empty text | meetingId=%s | output=%s | durationSeconds=%.2f | device=%s",
+				request.meetingId,
+				str(output_file),
+				duration_seconds,
+				ACTIVE_WHISPER_DEVICE,
+			)
+			return {
+				"success": True,
+				"transcript": "",
+				"warning": "Transcription completed but returned empty text.",
+			}
 
 		logger.info(
 			"Transcription completion | meetingId=%s | output=%s | durationSeconds=%.2f | device=%s",

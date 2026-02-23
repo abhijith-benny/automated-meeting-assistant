@@ -1,10 +1,5 @@
-const fs = require("fs");
-const path = require("path");
 const { transcribeAudioFile: transcribeAudio } = require("./stt.service");
-
-function normalizeMeetingId(meetingId) {
-	return String(meetingId).trim().replace(/[^a-zA-Z0-9_-]/g, "_");
-}
+const { summarizeTranscript } = require("../nlp-service/summarizer");
 
 async function transcribeMeetingController(req, res) {
 	try {
@@ -25,16 +20,20 @@ async function transcribeMeetingController(req, res) {
 		}
 
 		const transcript = await transcribeAudio(audioFilePath);
-		const safeMeetingId = normalizeMeetingId(meetingId);
-		const transcriptsDir = path.join(__dirname, "transcripts");
-		const transcriptFilePath = path.join(transcriptsDir, `meeting_${safeMeetingId}.txt`);
+		let summary = null;
+		let summaryError = null;
 
-		await fs.promises.mkdir(transcriptsDir, { recursive: true });
-		await fs.promises.writeFile(transcriptFilePath, transcript, "utf8");
+		try {
+			summary = await summarizeTranscript(transcript);
+		} catch (error) {
+			summaryError = error?.message || "Failed to generate meeting summary.";
+		}
 
 		return res.status(200).json({
 			success: true,
 			transcript,
+			summary,
+			summaryError,
 		});
 	} catch (error) {
 		return res.status(500).json({

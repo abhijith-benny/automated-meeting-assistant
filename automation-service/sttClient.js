@@ -1,9 +1,14 @@
 const STT_ENDPOINT = process.env.STT_ENDPOINT || "http://127.0.0.1:6000/transcribe";
-const DEFAULT_TIMEOUT_MS = 120000;
+const NLP_ENDPOINT = process.env.NLP_ENDPOINT || "http://localhost:7000/summarize";
+const DEFAULT_TIMEOUT_MS = 180000;
+const NLP_TIMEOUT_MS = Number(process.env.NLP_TIMEOUT_MS || 180000);
 const DEFAULT_RETRIES = Number(process.env.STT_REQUEST_RETRIES || 3);
 const RETRY_DELAY_MS = Number(process.env.STT_RETRY_DELAY_MS || 2000);
 const http = require("http");
 const https = require("https");
+const fs = require("fs");
+const path = require("path");
+const NLP_TRANSCRIPTS_DIR = process.env.NLP_TRANSCRIPTS_DIR || path.join(__dirname, "..", "nlp-service", "transcripts");
 
 function assertValidInput(meetingId, audioFilePath) {
 	if (!meetingId || typeof meetingId !== "string") {
@@ -37,9 +42,15 @@ async function triggerTranscription(meetingId, audioFilePath) {
 				controller,
 			});
 
+			const transcriptText = typeof payload?.transcript === "string" ? payload.transcript : "";
+			const analysis = await runNlpAnalysisSafely(meetingId, transcriptText);
+			if (analysis) {
+				payload.analysis = analysis;
+			}
+
 			console.info("[STT] Transcription request completed", {
 				meetingId,
-				transcriptLength: typeof payload.transcript === "string" ? payload.transcript.length : 0,
+				transcriptLength: transcriptText.length,
 			});
 
 			return payload;
@@ -64,6 +75,72 @@ async function triggerTranscription(meetingId, audioFilePath) {
 	}
 
 	throw new Error(`Failed to trigger transcription: ${lastError?.message || "Unknown error"}`);
+}
+
+function normalizeMeetingId(meetingId) {
+	return String(meetingId).trim().replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+async function runNlpAnalysisSafely(meetingId, transcriptText) {
+	if (!transcriptText.trim()) {
+		console.warn("[NLP] Skipping summarization: transcript is empty.");
+		return null;
+	}
+
+	try {
+		const analysis = await requestNlpSummary(transcriptText);
+		console.info("[NLP] Structured summary:", JSON.stringify(analysis, null, 2));
+		await saveAnalysisToFile(meetingId, analysis);
+		return analysis;
+	} catch (error) {
+		console.warn(`[NLP] Summarization failed (continuing): ${error?.message || error}`);
+		return null;
+	}
+}
+
+async function requestNlpSummary(transcriptText) {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), NLP_TIMEOUT_MS);
+
+	try {
+		const response = await fetch(NLP_ENDPOINT, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ transcript: transcriptText }),
+			signal: controller.signal,
+		});
+
+		const payload = await parseJsonResponse(response);
+		if (!response.ok) {
+			const detail = payload?.error || payload?.detail || response.statusText;
+			throw new Error(`NLP request failed with status ${response.status}: ${detail}`);
+		}
+
+		if (!payload || payload.success !== true || !payload.result) {
+			const detail = payload?.error || payload?.detail || "Invalid NLP response.";
+			throw new Error(`NLP service returned unsuccessful response: ${detail}`);
+		}
+
+		return payload.result;
+	} catch (error) {
+		if (error?.name === "AbortError") {
+			throw new Error(`NLP request timed out after ${NLP_TIMEOUT_MS}ms.`);
+		}
+		throw error;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+async function saveAnalysisToFile(meetingId, analysis) {
+	const safeMeetingId = normalizeMeetingId(meetingId);
+	const analysisDir = NLP_TRANSCRIPTS_DIR;
+	const outputPath = path.join(analysisDir, `meeting_${safeMeetingId}.json`);
+
+	await fs.promises.mkdir(analysisDir, { recursive: true });
+	await fs.promises.writeFile(outputPath, JSON.stringify(analysis, null, 2), "utf8");
+
+	console.info(`[NLP] Analysis saved to ${outputPath}`);
 }
 
 async function sendTranscriptionRequest({ meetingId, audioFilePath, controller }) {
