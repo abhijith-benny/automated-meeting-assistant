@@ -15,39 +15,38 @@ function preprocessTranscript(text) {
 }
 
 function buildPrompt(transcriptText) {
-	return `You are an assistant for meeting post-processing.
+	return `You are a meeting-notes assistant. Analyze the transcript below and return ONLY valid JSON.
 
-Task:
-1) Clean minor transcription errors while preserving original meaning.
-2) Produce a concise meeting summary.
-3) Extract action items.
-4) Extract deadlines and dates mentioned.
-5) Extract responsible person names when available.
+IMPORTANT INSTRUCTIONS:
+- Read the ENTIRE transcript carefully before answering.
+- Extract ALL dates mentioned (e.g. "February 26, 2026", "March 1, 2026").
+- Extract ALL action items / tasks / requests made by anyone.
+- Write a summary that covers every topic discussed.
+- Do NOT skip any information.
 
-Return strictly valid JSON only. Do not include markdown, code fences, comments, or any extra text.
-Include a cleaned transcript of the meeting under the key 'cleaned_transcript'.
-Use exactly this schema:
+Return ONLY this JSON (no markdown, no code fences, no extra text):
 {
-	"cleaned_transcript": "string",
-	"summary": "string",
-	"action_items": [
-		{
-			"task": "string",
-			"responsible": "string",
-			"deadline": "string"
-		}
-	],
-	"important_dates": ["string"]
+  "cleaned_transcript": "<full corrected transcript preserving all original content>",
+  "summary": "<3-6 sentence summary covering ALL topics, dates, and decisions>",
+  "action_items": [
+    {
+      "task": "<what needs to be done>",
+      "responsible": "<who should do it, or empty string if unknown>",
+      "deadline": "<deadline if mentioned, or empty string>"
+    }
+  ],
+  "important_dates": ["<every date/deadline mentioned in the transcript>"]
 }
 
 Rules:
-- If a value is unknown, use an empty string for fields or an empty array for lists.
-- Keep summary concise (3-6 sentences max).
-- action_items must be an array, even if empty.
-- important_dates must contain date/deadline references mentioned in the transcript.
+- cleaned_transcript must contain the FULL transcript, not a shortened version.
+- summary must NOT be empty. Summarize the key points in 3-6 sentences.
+- important_dates must list EVERY date mentioned. Do not omit any.
+- action_items must list EVERY task, request, or action mentioned.
+- If a field is truly unknown, use "" for strings or [] for arrays.
 
 Transcript:
-${transcriptText}`;
+"""${transcriptText}"""`;
 }
 
 function parseModelJson(rawText) {
@@ -70,23 +69,127 @@ function parseModelJson(rawText) {
 	}
 }
 
-function normalizeResult(parsed) {
-	const normalized = {
-		cleaned_transcript: typeof parsed.cleaned_transcript === 'string' ? parsed.cleaned_transcript : '',
-		summary: typeof parsed.summary === 'string' ? parsed.summary : '',
-		action_items: Array.isArray(parsed.action_items)
-			? parsed.action_items.map((item) => ({
-					task: typeof item?.task === 'string' ? item.task : '',
-					responsible: typeof item?.responsible === 'string' ? item.responsible : '',
-					deadline: typeof item?.deadline === 'string' ? item.deadline : '',
-				}))
-			: [],
-		important_dates: Array.isArray(parsed.important_dates)
-			? parsed.important_dates.map((d) => (typeof d === 'string' ? d : String(d ?? '')))
-			: [],
-	};
+/**
+ * Regex-based fallback: extract dates from transcript text.
+ * Catches patterns like "February 26, 2026", "March 1, 2026", "Feb 29, 2026", "2026-03-05", etc.
+ */
+function extractDatesFromText(text) {
+	if (!text) return [];
+	const patterns = [
+		// "February 26, 2026" / "March 1, 2026"
+		/(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4}/gi,
+		// "Feb 26, 2026"
+		/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4}/gi,
+		// "2026-03-05" ISO dates
+		/\d{4}-\d{2}-\d{2}/g,
+		// "26/02/2026" or "02/26/2026"
+		/\d{1,2}\/\d{1,2}\/\d{4}/g,
+	];
+	const found = new Set();
+	for (const pattern of patterns) {
+		const matches = text.match(pattern);
+		if (matches) {
+			for (const m of matches) {
+				found.add(m.trim());
+			}
+		}
+	}
+	return [...found];
+}
 
-	return normalized;
+/**
+ * Regex-based fallback: extract action-like sentences from transcript text.
+ * Splits into sentences, then picks those with imperative / request language.
+ */
+function extractActionItemsFromText(text) {
+	if (!text) return [];
+
+	const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 15);
+
+	// Only match sentences that contain request / imperative language
+	const actionPattern =
+		/\b(please\s|kindly\s|I\s+request|ensure\s+that|make\s+sure|finalize\s|upload\s|submit\s|prepare\s)/i;
+
+	const items = [];
+	const seen = new Set();
+	for (const sentence of sentences) {
+		if (actionPattern.test(sentence) && !seen.has(sentence)) {
+			seen.add(sentence);
+
+			// Try to extract a deadline from the same sentence
+			const dateMatch = sentence.match(
+				/(?:before|by|until|due|on)\s+(?:.*?\s+)?((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4})/i
+			);
+
+			items.push({
+				task: sentence.trim(),
+				responsible: '',
+				deadline: dateMatch ? dateMatch[1].trim() : '',
+			});
+		}
+	}
+	return items;
+}
+
+function normalizeResult(parsed, originalTranscript) {
+	const cleaned = typeof parsed.cleaned_transcript === 'string' && parsed.cleaned_transcript.length > 0
+		? parsed.cleaned_transcript
+		: originalTranscript || '';
+
+	let summary = typeof parsed.summary === 'string' ? parsed.summary : '';
+
+	let actionItems = Array.isArray(parsed.action_items)
+		? parsed.action_items.map((item) => ({
+				task: typeof item?.task === 'string' ? item.task : '',
+				responsible: typeof item?.responsible === 'string' ? item.responsible : '',
+				deadline: typeof item?.deadline === 'string' ? item.deadline : '',
+			}))
+		: [];
+
+	let importantDates = Array.isArray(parsed.important_dates)
+		? parsed.important_dates.map((d) => (typeof d === 'string' ? d : String(d ?? '')))
+		: [];
+
+	// ── Fallback: extract dates from transcript if LLM missed them ──
+	const regexDates = extractDatesFromText(originalTranscript);
+	if (regexDates.length > 0 && importantDates.length === 0) {
+		console.info('[NLP] LLM returned no dates – using regex fallback');
+		importantDates = regexDates;
+	} else if (regexDates.length > importantDates.length) {
+		// Merge: add any regex-found dates not already covered by the LLM
+		const existing = new Set(importantDates.map((d) => d.toLowerCase()));
+		for (const rd of regexDates) {
+			if (!existing.has(rd.toLowerCase())) {
+				importantDates.push(rd);
+			}
+		}
+	}
+
+	// ── Fallback: extract action items if LLM missed them ──
+	if (actionItems.length === 0 || actionItems.every((a) => !a.task)) {
+		const regexActions = extractActionItemsFromText(originalTranscript);
+		if (regexActions.length > 0) {
+			console.info('[NLP] LLM returned no action items – using regex fallback');
+			actionItems = regexActions;
+		}
+	}
+
+	// ── Fallback: generate a basic summary if LLM left it empty ──
+	if (!summary.trim() && originalTranscript) {
+		console.info('[NLP] LLM returned empty summary – generating fallback');
+		const sentences = originalTranscript
+			.split(/(?<=[.!?])\s+/)
+			.filter((s) => s.length > 10);
+		summary = sentences.slice(0, 4).join(' ');
+		if (sentences.length > 4) summary += ' …';
+	}
+
+	return {
+		cleaned_transcript: cleaned,
+		summary,
+		action_items: actionItems,
+		important_dates: importantDates,
+	};
 }
 
 async function summarizeTranscript(transcriptText) {
@@ -129,7 +232,7 @@ async function summarizeTranscript(transcriptText) {
 			}
 
 			const parsed = parseModelJson(data.response);
-			return normalizeResult(parsed);
+			return normalizeResult(parsed, cleaned);
 		} catch (error) {
 			clearTimeout(timeout);
 			if (error?.name === 'AbortError') {
