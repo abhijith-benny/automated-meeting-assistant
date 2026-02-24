@@ -1,5 +1,5 @@
 const OLLAMA_URL = 'http://localhost:11434/api/generate';
-const OLLAMA_MODEL = 'mistral';
+const OLLAMA_MODEL = 'phi';
 const REQUEST_TIMEOUT_MS = 180000;
 const MIN_TRANSCRIPT_LENGTH = 50; // characters
 
