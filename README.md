@@ -9,7 +9,6 @@
     <img src="https://img.shields.io/badge/Whisper-OpenAI-412991?logo=openai&logoColor=white" alt="Whisper" />
     <img src="https://img.shields.io/badge/Ollama-Local%20LLM-000000?logo=ollama&logoColor=white" alt="Ollama" />
     <img src="https://img.shields.io/badge/Playwright-Automation-2EAD33?logo=playwright&logoColor=white" alt="Playwright" />
-    <img src="https://img.shields.io/badge/License-MIT-blue" alt="License" />
   </p>
 </p>
 
@@ -34,10 +33,6 @@
 - [Offline Pipeline (CLI)](#-offline-pipeline-cli)
 - [Testing](#-testing)
 - [Troubleshooting Guide](#-troubleshooting-guide)
-- [Future Improvements](#-future-improvements)
-- [License](#-license)
-- [Author](#-author)
-
 ---
 
 ## 🌟 Project Overview

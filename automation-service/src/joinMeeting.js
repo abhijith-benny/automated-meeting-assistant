@@ -69,6 +69,7 @@ function startRecording(meetingId) {
   recorderProcess = recorder;
   currentRecordingPath = outputPath;
   currentMeetingId = meetingId;
+  console.log('🎙 Recording started...');
 }
 
 async function stopRecording(reason) {
@@ -139,25 +140,83 @@ async function stopRecording(reason) {
 }
 
 async function waitForMeetingEnd(page) {
-  console.log('🕒 Waiting for meeting to end...');
+  console.log('🕒 Waiting for meeting to end (no time limit)...');
 
-  try {
-    await page.waitForFunction(() => {
-      const text = document.body ? document.body.innerText : '';
-      const lowered = text.toLowerCase();
+  // Wait 10 seconds after joining before starting status checks
+  // so the meeting UI has time to fully stabilise
+  console.log('⏳ Letting meeting UI stabilise for 10 seconds...');
+  await new Promise((resolve) => setTimeout(resolve, 10000));
 
-      return (
-        lowered.includes('you left the meeting') ||
-        lowered.includes('meeting has ended') ||
-        lowered.includes('return to home screen') ||
-        lowered.includes('you have left the meeting')
-      );
-    }, { timeout: 0, polling: 2000 });
+  while (true) {
+    console.log('🔍 Checking meeting status...');
 
-    console.log('✅ Meeting end detected');
-  } catch (err) {
-    console.log('⚠️  Meeting end watcher stopped:', err.message);
+    try {
+      // 1. Check if the browser page/tab has been closed
+      if (page.isClosed()) {
+        console.log('🛑 Meeting no longer active (page closed)');
+        break;
+      }
+
+      // 2. Check if the URL still points to Google Meet
+      const currentUrl = page.url();
+      if (!currentUrl.includes('meet.google.com')) {
+        console.log('🛑 Meeting no longer active (navigated away from Meet)');
+        break;
+      }
+
+      // 3. Check DOM for positive "still in meeting" signal
+      const status = await page.evaluate(() => {
+        const body = document.body ? document.body.innerText : '';
+        const lowered = body.toLowerCase();
+
+        // Explicit meeting-ended text takes priority
+        if (
+          lowered.includes('you left the meeting') ||
+          lowered.includes('meeting has ended') ||
+          lowered.includes('return to home screen') ||
+          lowered.includes('you have left the meeting')
+        ) {
+          return 'ended';
+        }
+
+        // Look for the "Leave call" button — its presence means we are
+        // still inside the meeting
+        const leaveBtn = document.querySelector(
+          '[aria-label="Leave call"], [aria-label="Leave"], [data-tooltip="Leave call"]'
+        );
+        if (leaveBtn) {
+          return 'active';
+        }
+
+        // Fallback: any meeting-control button is also a positive signal
+        const controls = document.querySelectorAll(
+          '[aria-label*="microphone"], [aria-label*="camera"], [aria-label*="End"]'
+        );
+        if (controls.length > 0) {
+          return 'active';
+        }
+
+        // No positive signals found
+        return 'no-ui';
+      }).catch(() => 'page-error');
+
+      if (status === 'active') {
+        console.log('✅ Meeting still active');
+      } else {
+        console.log(`🛑 Meeting no longer active (reason: ${status})`);
+        break;
+      }
+    } catch (err) {
+      // If we cannot interact with the page at all, treat as ended
+      console.log('🛑 Meeting no longer active (page inaccessible)');
+      break;
+    }
+
+    // Poll every 5 seconds
+    await new Promise((resolve) => setTimeout(resolve, 5000));
   }
+
+  console.log('🛑 Meeting ended. Stopping recording...');
 }
 
 (async () => {
