@@ -173,3 +173,6 @@ env/
 # STT generated artifacts
 **/transcripts/
 logs/recordings/
+
+# Pipeline output
+output/
