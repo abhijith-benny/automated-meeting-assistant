@@ -132,23 +132,48 @@ function extractActionItemsFromText(text) {
 }
 
 function normalizeResult(parsed, originalTranscript) {
+	const currentYear = new Date().getFullYear().toString();
+
+	/**
+	 * Replace placeholder years the LLM sometimes produces
+	 * (e.g. "????", "XXXX", "20XX") with the current year.
+	 */
+	function fixYear(str) {
+		if (typeof str !== 'string') return str;
+		return str
+			.replace(/\?{2,4}/g, currentYear)
+			.replace(/\bXXXX\b/gi, currentYear)
+			.replace(/\b20XX\b/gi, currentYear);
+	}
+
 	const cleaned = typeof parsed.cleaned_transcript === 'string' && parsed.cleaned_transcript.length > 0
-		? parsed.cleaned_transcript
+		? fixYear(parsed.cleaned_transcript)
 		: originalTranscript || '';
 
-	let summary = typeof parsed.summary === 'string' ? parsed.summary : '';
+	let summary = typeof parsed.summary === 'string' ? fixYear(parsed.summary) : '';
 
 	let actionItems = Array.isArray(parsed.action_items)
 		? parsed.action_items.map((item) => ({
-				task: typeof item?.task === 'string' ? item.task : '',
+				task: fixYear(typeof item?.task === 'string' ? item.task : ''),
 				responsible: typeof item?.responsible === 'string' ? item.responsible : '',
-				deadline: typeof item?.deadline === 'string' ? item.deadline : '',
+				deadline: fixYear(typeof item?.deadline === 'string' ? item.deadline : ''),
 			}))
 		: [];
 
 	let importantDates = Array.isArray(parsed.important_dates)
-		? parsed.important_dates.map((d) => (typeof d === 'string' ? d : String(d ?? '')))
+		? parsed.important_dates
+				.map((d) => fixYear(typeof d === 'string' ? d : String(d ?? '')))
+				.filter((d) => d && !d.includes('?'))
 		: [];
+
+	// ── Deduplicate dates (case-insensitive) ──
+	const seenDates = new Set();
+	importantDates = importantDates.filter((d) => {
+		const key = d.toLowerCase().replace(/,/g, '').replace(/\s+/g, ' ').trim();
+		if (seenDates.has(key)) return false;
+		seenDates.add(key);
+		return true;
+	});
 
 	// ── Fallback: extract dates from transcript if LLM missed them ──
 	const regexDates = extractDatesFromText(originalTranscript);
@@ -157,10 +182,12 @@ function normalizeResult(parsed, originalTranscript) {
 		importantDates = regexDates;
 	} else if (regexDates.length > importantDates.length) {
 		// Merge: add any regex-found dates not already covered by the LLM
-		const existing = new Set(importantDates.map((d) => d.toLowerCase()));
+		const existing = new Set(importantDates.map((d) => d.toLowerCase().replace(/,/g, '').replace(/\s+/g, ' ').trim()));
 		for (const rd of regexDates) {
-			if (!existing.has(rd.toLowerCase())) {
+			const key = rd.toLowerCase().replace(/,/g, '').replace(/\s+/g, ' ').trim();
+			if (!existing.has(key)) {
 				importantDates.push(rd);
+				existing.add(key);
 			}
 		}
 	}
