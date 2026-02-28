@@ -69,6 +69,7 @@ function startRecording(meetingId) {
   recorderProcess = recorder;
   currentRecordingPath = outputPath;
   currentMeetingId = meetingId;
+  console.log('🎙 Recording started...');
 }
 
 async function stopRecording(reason) {
@@ -138,25 +139,176 @@ async function stopRecording(reason) {
   }
 }
 
-async function waitForMeetingEnd(page) {
-  console.log('🕒 Waiting for meeting to end...');
+async function waitForMeetingEnd(page, context) {
+  console.log('🕒 Waiting for meeting to end (no time limit)...');
 
+  // Wait 10 seconds after joining before starting status checks
+  // so the meeting UI has time to fully stabilise
+  console.log('⏳ Letting meeting UI stabilise for 10 seconds...');
+  await new Promise((resolve) => setTimeout(resolve, 10000));
+
+  let leaveButtonMissCount = 0;
+
+  while (true) {
+    console.log('🔍 Checking meeting status...');
+
+    try {
+      // 1. Check if the browser page/tab has been closed
+      if (page.isClosed()) {
+        console.log('🛑 Meeting ended. Leaving meeting... (page closed)');
+        break;
+      }
+
+      // 2. Check if the URL still points to Google Meet
+      const currentUrl = page.url();
+      if (!currentUrl.includes('meet.google.com')) {
+        console.log('🛑 Meeting ended. Leaving meeting... (navigated away from Meet)');
+        break;
+      }
+
+      // 3. Check DOM for leave button and participant count
+      const status = await page.evaluate(() => {
+        const body = document.body ? document.body.innerText : '';
+        const lowered = body.toLowerCase();
+
+        // Explicit meeting-ended text takes priority
+        if (
+          lowered.includes('you left the meeting') ||
+          lowered.includes('meeting has ended') ||
+          lowered.includes('return to home screen') ||
+          lowered.includes('you have left the meeting')
+        ) {
+          return { state: 'ended', hasLeaveButton: false, participantCount: 0 };
+        }
+
+        // Check for the "Leave call" button
+        const leaveBtn = document.querySelector(
+          '[aria-label="Leave call"], [aria-label="Leave"], [data-tooltip="Leave call"]'
+        );
+        const hasLeaveButton = !!leaveBtn;
+
+        // Check participant count element
+        let participantCount = -1; // -1 means element not found
+        // Try multiple selectors for Google Meet participant count
+        const participantSelectors = [
+          '[data-participant-count]',
+          '.gFyGKf',
+          '[aria-label*="participant"]',
+          '[data-tooltip*="participant"]',
+          // The people/participant button often shows count as a badge
+          'button[aria-label*="people"] span',
+          'button[aria-label*="People"] span',
+          // Top-bar participant indicator (the number next to the avatar icon)
+          '.uGOf1d',
+          '.rua5Nb',
+          '.wnPUne',
+        ];
+        for (const sel of participantSelectors) {
+          const el = document.querySelector(sel);
+          if (el) {
+            const text = el.textContent || el.getAttribute('aria-label') || el.getAttribute('data-tooltip') || '';
+            const match = text.match(/(\d+)/);
+            if (match) {
+              participantCount = parseInt(match[1], 10);
+              break;
+            }
+          }
+        }
+
+        // Fallback: count all visible participant tiles/video elements
+        if (participantCount === -1) {
+          const tiles = document.querySelectorAll('[data-participant-id], [data-requested-participant-id]');
+          if (tiles.length > 0) {
+            participantCount = tiles.length;
+          }
+        }
+
+        return { state: hasLeaveButton ? 'active' : 'no-leave-btn', hasLeaveButton, participantCount };
+      }).catch(() => ({ state: 'page-error', hasLeaveButton: false, participantCount: -1 }));
+
+      // Evaluate leave button presence
+      if (status.hasLeaveButton) {
+        leaveButtonMissCount = 0;
+      } else {
+        leaveButtonMissCount++;
+        console.log(`⚠️ Leave button not found (${leaveButtonMissCount}/3 consecutive misses)`);
+      }
+
+      // Log participant info
+      if (status.participantCount > 1) {
+        console.log(`👥 Participants present (${status.participantCount})`);
+      } else if (status.participantCount === 1) {
+        console.log('🛑 Meeting ended. Leaving meeting... (only self remaining, participant count is 1)');
+        break;
+      } else if (status.participantCount === 0) {
+        console.log('🛑 Meeting ended. Leaving meeting... (participant count is 0)');
+        break;
+      }
+
+      // Check if meeting ended via explicit text
+      if (status.state === 'ended') {
+        console.log('🛑 Meeting ended. Leaving meeting... (meeting ended text detected)');
+        break;
+      }
+
+      // Check if page became inaccessible
+      if (status.state === 'page-error') {
+        console.log('🛑 Meeting ended. Leaving meeting... (page inaccessible)');
+        break;
+      }
+
+      // Check 3 consecutive leave button misses
+      if (leaveButtonMissCount >= 3) {
+        console.log('🛑 Meeting ended. Leaving meeting... (leave button missing for 3 consecutive checks)');
+        break;
+      }
+
+      // Still active
+      if (status.state === 'active') {
+        console.log('✅ Meeting still active');
+      }
+    } catch (err) {
+      // If we cannot interact with the page at all, treat as ended
+      console.log('🛑 Meeting ended. Leaving meeting... (page inaccessible)');
+      break;
+    }
+
+    // Poll every 5 seconds
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+
+  console.log('🛑 Meeting exit confirmed');
+
+  // --- Clean exit sequence ---
+
+  // 1. Click "Leave call" button if visible
   try {
-    await page.waitForFunction(() => {
-      const text = document.body ? document.body.innerText : '';
-      const lowered = text.toLowerCase();
-
-      return (
-        lowered.includes('you left the meeting') ||
-        lowered.includes('meeting has ended') ||
-        lowered.includes('return to home screen') ||
-        lowered.includes('you have left the meeting')
-      );
-    }, { timeout: 0, polling: 2000 });
-
-    console.log('✅ Meeting end detected');
+    if (!page.isClosed()) {
+      const leaveBtn = page.locator(
+        '[aria-label="Leave call"], [aria-label="Leave"], [data-tooltip="Leave call"]'
+      ).first();
+      if (await leaveBtn.isVisible({ timeout: 2000 })) {
+        await leaveBtn.click();
+        console.log('📞 Clicked "Leave call" button');
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
   } catch (err) {
-    console.log('⚠️  Meeting end watcher stopped:', err.message);
+    console.log('ℹ️  Could not click leave button:', err.message);
+  }
+
+  // 2. Stop ffmpeg recording (SIGINT) and wait for it to fully exit
+  await stopRecording('meeting ended');
+
+  // 3. Close browser context (this also closes the browser for persistent contexts)
+  try {
+    if (context) {
+      await context.close();
+      console.log('✅ Browser context closed');
+      console.log('✅ Browser closed');
+    }
+  } catch (err) {
+    console.log('ℹ️  Browser context already closed:', err.message);
   }
 }
 
@@ -333,19 +485,19 @@ async function waitForMeetingEnd(page) {
     if (!joined) {
       console.log('⚠️  Could not automatically join - you may need to click the join button manually');
     } else {
-      process.on('SIGINT', () => {
-        stopRecording('process interrupted').catch((err) => {
-          console.error('⚠️  Failed to stop recording on SIGINT:', err.message);
+      const cleanupAndExit = async (signal) => {
+        console.log(`\n🛑 Received ${signal}, cleaning up...`);
+        await stopRecording(`process ${signal.toLowerCase()}`).catch((err) => {
+          console.error(`⚠️  Failed to stop recording on ${signal}:`, err.message);
         });
-      });
-      process.on('SIGTERM', () => {
-        stopRecording('process terminated').catch((err) => {
-          console.error('⚠️  Failed to stop recording on SIGTERM:', err.message);
-        });
-      });
+        try { await context.close(); } catch (_) { /* already closed */ }
+        process.exit(0);
+      };
 
-      await waitForMeetingEnd(page);
-      await stopRecording('meeting ended');
+      process.on('SIGINT', () => cleanupAndExit('SIGINT'));
+      process.on('SIGTERM', () => cleanupAndExit('SIGTERM'));
+
+      await waitForMeetingEnd(page, context);
     }
 
     console.log('');
@@ -353,9 +505,6 @@ async function waitForMeetingEnd(page) {
     console.log('✅ Meeting join process completed');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('⏰ Completed at:', new Date().toISOString());
-    console.log('');
-    console.log('💡 The browser window will remain open.');
-    console.log('💡 You may need to wait for the host to admit you.');
     console.log('');
 
   } catch (err) {
@@ -366,6 +515,9 @@ async function waitForMeetingEnd(page) {
     console.error('Error:', err.message);
     console.error('Stack:', err.stack);
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    // Safety net: ensure recording stops and browser closes on any fatal error
+    await stopRecording('fatal error').catch(() => {});
     process.exit(1);
   }
 })();
