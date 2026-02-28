@@ -6,7 +6,8 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
+from datetime import datetime
 
 import requests
 
@@ -88,8 +89,10 @@ def _parse_llm_json(raw: str) -> Dict[str, Any]:
 
 def _normalize(parsed: Dict[str, Any]) -> Dict[str, Any]:
     """Ensure the parsed result conforms to the expected schema."""
+    # Ensure cleaned_transcript is normalized whitespace
+    cleaned = _preprocess(parsed.get("cleaned_transcript", "") or "")
     return {
-        "cleaned_transcript": parsed.get("cleaned_transcript", "") or "",
+        "cleaned_transcript": cleaned,
         "summary": parsed.get("summary", "") or "",
         "action_items": [
             {
@@ -104,6 +107,95 @@ def _normalize(parsed: Dict[str, Any]) -> Dict[str, Any]:
             str(d) for d in (parsed.get("important_dates") or [])
         ],
     }
+
+
+def _find_dates(text: str) -> List[str]:
+    """Rudimentary date finder for common formats (e.g. February 26, 2026)."""
+    if not text:
+        return []
+    month_names = r"January|February|March|April|May|June|July|August|September|October|November|December"
+    # Matches 'February 26, 2026', 'March 1, 2026 to March 3, 2026', 'Feb 26 2026'
+    patterns = [
+        rf"\b({month_names})\s+\d{{1,2}},?\s*\d{{4}}(?:\s+to\s+({month_names})\s+\d{{1,2}},?\s*\d{{4}})?",
+        r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+    ]
+    found: List[str] = []
+    for p in patterns:
+        for m in re.finditer(p, text):
+            found.append(m.group(0))
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for d in found:
+        if d not in seen:
+            out.append(d)
+            seen.add(d)
+    return out
+
+
+def _is_valid_date_token(token: str) -> bool:
+    """Return True if token is a valid date or date range in supported formats.
+
+    Supported single date formats: 'February 26, 2026', 'Feb 26, 2026', '2/26/2026'
+    Supported ranges: '<date> to <date>' where both sides validate.
+    """
+    if not token or not token.strip():
+        return False
+    token = token.strip()
+    # Handle ranges like 'March 1, 2026 to March 3, 2026'
+    if " to " in token:
+        parts = [p.strip() for p in token.split(" to ")]
+        if len(parts) != 2:
+            return False
+        return _is_valid_date_token(parts[0]) and _is_valid_date_token(parts[1])
+
+    # Try parsing common verbose formats
+    formats = ["%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%b %d %Y", "%m/%d/%Y", "%d/%m/%Y"]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(token, fmt)
+            # Reject dates that are clearly out of reasonable bounds
+            if dt.year < 1900 or dt.year > datetime.utcnow().year + 5:
+                return False
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _fallback_extract(parsed: Dict[str, Any], cleaned: str) -> Dict[str, Any]:
+    """Fill missing fields using simple heuristics when the LLM returns empties."""
+    result = parsed.copy()
+
+    # Summary fallback: take first 2 sentences if summary empty
+    if not (result.get("summary") or ""):
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        summary_candidates = [s.strip() for s in sentences if s.strip()]
+        result["summary"] = " ".join(summary_candidates[:2]) if summary_candidates else ""
+
+    # Important dates fallback
+    if not (result.get("important_dates") or []):
+        dates = [d for d in _find_dates(cleaned) if _is_valid_date_token(d)]
+        result["important_dates"] = dates
+
+    # Action items fallback: look for sentences containing action keywords
+    if not (result.get("action_items") or []):
+        keywords = [r"request", r"please", r"ensure", r"target", r"schedule", r"scheduled", r"finalize", r"upload", r"complete"]
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        items = []
+        for s in sentences:
+            low = s.lower()
+            if any(k in low for k in keywords):
+                # find date inside sentence if any and validate
+                dates = [d for d in _find_dates(s) if _is_valid_date_token(d)]
+                items.append({
+                    "task": _preprocess(s.strip()),
+                    "responsible": "",
+                    "deadline": dates[0] if dates else "",
+                })
+        result["action_items"] = items
+
+    return result
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -162,8 +254,14 @@ def summarize(
             resp.raise_for_status()
             data = resp.json()
             raw_text = data.get("response", "")
+            logger.debug("LLM raw response: %s", raw_text)
             parsed = _parse_llm_json(raw_text)
             result = _normalize(parsed)
+            # If important fields are empty, apply a simple fallback extractor
+            if not result.get("summary") or not result.get("action_items") or not result.get("important_dates"):
+                logger.debug("LLM returned empty structured fields, applying fallback extractor.")
+                parsed_fallback = _fallback_extract(parsed, cleaned)
+                result = _normalize(parsed_fallback)
             elapsed = time.perf_counter() - start
             logger.info("Summarization done in %.2f s", elapsed)
             return result
