@@ -1,6 +1,13 @@
-const { transcribeAudioFile: transcribeAudio } = require("./stt.service");
-const { summarizeTranscript } = require("../nlp-service/summarizer");
+const { processMeeting } = require("./orchestrator");
 
+/**
+ * POST /api/stt/transcribe
+ *
+ * Hybrid transcription + summarization controller.
+ *   - Tries AssemblyAI first (transcription + LeMUR summary).
+ *   - Falls back to local Whisper + Ollama on any AssemblyAI failure.
+ *   - Returns a unified JSON structure regardless of source.
+ */
 async function transcribeMeetingController(req, res) {
 	try {
 		const { meetingId, audioFilePath } = req.body || {};
@@ -19,26 +26,21 @@ async function transcribeMeetingController(req, res) {
 			});
 		}
 
-		const transcript = await transcribeAudio(audioFilePath);
-		let summary = null;
-		let summaryError = null;
+		const result = await processMeeting(audioFilePath, meetingId);
 
-		try {
-			summary = await summarizeTranscript(transcript);
-		} catch (error) {
-			summaryError = error?.message || "Failed to generate meeting summary.";
-		}
+		// Map to HTTP status: 200 on success, 502 if both pipelines failed.
+		const statusCode = result.success ? 200 : 502;
 
-		return res.status(200).json({
-			success: true,
-			transcript,
-			summary,
-			summaryError,
-		});
+		return res.status(statusCode).json(result);
 	} catch (error) {
+		// Unexpected / unhandled error — never crash the service.
+		console.error("[Controller] Unhandled error:", error);
 		return res.status(500).json({
 			success: false,
-			error: error?.message || "Failed to transcribe audio.",
+			source: "none",
+			transcript: "",
+			summary: null,
+			error: error?.message || "Internal server error.",
 		});
 	}
 }
