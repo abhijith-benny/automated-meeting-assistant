@@ -1,6 +1,7 @@
-const STT_ENDPOINT = process.env.STT_ENDPOINT || "http://127.0.0.1:6000/transcribe";
+// Point to the hybrid stt-service (AssemblyAI → local Whisper+Ollama fallback)
+const STT_ENDPOINT = process.env.STT_ENDPOINT || "http://127.0.0.1:5002/api/stt/process";
 const NLP_ENDPOINT = process.env.NLP_ENDPOINT || "http://localhost:7000/summarize";
-const DEFAULT_TIMEOUT_MS = 180000;
+const DEFAULT_TIMEOUT_MS = 600000; // 10 min — AssemblyAI upload + transcription + LeMUR can take time
 const NLP_TIMEOUT_MS = Number(process.env.NLP_TIMEOUT_MS || 180000);
 const DEFAULT_RETRIES = Number(process.env.STT_REQUEST_RETRIES || 3);
 const RETRY_DELAY_MS = Number(process.env.STT_RETRY_DELAY_MS || 2000);
@@ -43,7 +44,18 @@ async function triggerTranscription(meetingId, audioFilePath) {
 			});
 
 			const transcriptText = typeof payload?.transcript === "string" ? payload.transcript : "";
-			const analysis = await runNlpAnalysisSafely(meetingId, transcriptText);
+
+			// The hybrid stt-service returns summary directly (from AssemblyAI or Ollama).
+			// Only call NLP separately if the hybrid service didn't return a summary.
+			let analysis = payload?.summary || null;
+			if (!analysis && transcriptText.trim()) {
+				console.info("[STT] Hybrid service returned no summary — calling NLP separately");
+				analysis = await runNlpAnalysisSafely(meetingId, transcriptText);
+			} else if (analysis) {
+				console.info("[STT] Using summary from hybrid service (source: %s)", payload?.source || "unknown");
+				await saveAnalysisToFile(meetingId, analysis);
+			}
+
 			if (analysis) {
 				payload.analysis = analysis;
 			}
