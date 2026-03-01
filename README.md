@@ -1,14 +1,17 @@
 <p align="center">
   <h1 align="center">🤖 Automated Meeting Assistant</h1>
   <p align="center">
-    <strong>AI-powered meeting automation that joins, records, transcribes, and summarizes Google Meet sessions — entirely locally.</strong>
+    <strong>AI-powered meeting automation that joins, records, transcribes, and summarizes Google Meet sessions — with hybrid cloud + local processing and integrations to Notion & Google Calendar.</strong>
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white" alt="Node.js" />
     <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python" />
     <img src="https://img.shields.io/badge/Whisper-OpenAI-412991?logo=openai&logoColor=white" alt="Whisper" />
+    <img src="https://img.shields.io/badge/AssemblyAI-Hybrid%20STT-3B82F6" alt="AssemblyAI" />
     <img src="https://img.shields.io/badge/Ollama-Local%20LLM-000000?logo=ollama&logoColor=white" alt="Ollama" />
     <img src="https://img.shields.io/badge/Playwright-Automation-2EAD33?logo=playwright&logoColor=white" alt="Playwright" />
+    <img src="https://img.shields.io/badge/Notion-Integration-000000?logo=notion&logoColor=white" alt="Notion" />
+    <img src="https://img.shields.io/badge/Google%20Calendar-Integration-4285F4?logo=googlecalendar&logoColor=white" alt="Google Calendar" />
   </p>
 </p>
 
@@ -27,30 +30,35 @@
 - [Audio Configuration Details](#-audio-configuration-details)
 - [Whisper Configuration Details](#-whisper-configuration-details)
 - [NLP Service Details](#-nlp-service-details)
+- [Hybrid STT Pipeline](#-hybrid-stt-pipeline)
+- [Integrations](#-integrations)
 - [API Endpoints](#-api-endpoints)
 - [Example Workflow](#-example-workflow)
 - [Frontend UI](#-frontend-ui)
 - [Offline Pipeline (CLI)](#-offline-pipeline-cli)
 - [Testing](#-testing)
+- [Environment Variables](#-environment-variables)
 - [Troubleshooting Guide](#-troubleshooting-guide)
+
 ---
 
 ## 🌟 Project Overview
 
-The **Automated Meeting Assistant** is a fully local, privacy-first AI system that automates the entire lifecycle of a Google Meet session:
+The **Automated Meeting Assistant** is a privacy-first AI system that automates the entire lifecycle of a Google Meet session:
 
 1. **Joins** a Google Meet call automatically using Playwright + Brave Browser.
 2. **Records** system audio in real time using `ffmpeg` and PulseAudio monitor source.
-3. **Converts** the recorded audio to a Whisper-optimized format (16 kHz, mono, PCM 16-bit).
-4. **Transcribes** speech-to-text using a locally running OpenAI Whisper model via FastAPI.
-5. **Summarizes** the transcript and extracts structured meeting intelligence using a local LLM (Ollama).
+3. **Transcribes** speech-to-text using a **hybrid pipeline** — AssemblyAI (cloud) with automatic fallback to local OpenAI Whisper.
+4. **Summarizes** the transcript and extracts structured meeting intelligence using AssemblyAI LeMUR or a local LLM (Ollama).
+5. **Pushes results** to external integrations:
+   - **Notion** — Creates a meeting page with summary and tasks/deadlines table.
+   - **Google Calendar** — Creates calendar events for action item deadlines.
 6. **Outputs** structured JSON containing:
    - 📝 Cleaned transcript
    - 📄 Concise meeting summary
    - ✅ Action items with responsible persons and deadlines
-   - 📅 Important dates and milestones
 
-All processing happens **on your machine** — no audio or text is sent to external cloud services (unless you explicitly opt for the cloud STT alternative).
+All local processing happens **on your machine**. Cloud services (AssemblyAI) are used when available, with full local fallback when they are not.
 
 ---
 
@@ -58,79 +66,89 @@ All processing happens **on your machine** — no audio or text is sent to exter
 
 | Feature | Description |
 |---|---|
-| 🔒 **Privacy-First** | All transcription and summarization runs locally — your meeting data never leaves your machine |
-| 🤖 **Fully Automated** | Joins the meeting, records, transcribes, and summarizes — zero manual intervention |
-| 🎙️ **System Audio Capture** | Records what you *hear* (system audio), not microphone input |
-| 🧠 **Local LLM Summarization** | Uses Ollama with phi/mistral models for intelligent summarization |
-| 🗣️ **Whisper STT** | Accurate speech-to-text using OpenAI's Whisper model running locally |
+| 🔒 **Privacy-First Local Fallback** | Full local pipeline (Whisper + Ollama) when cloud services are unavailable |
+| ☁️ **Hybrid STT Pipeline** | AssemblyAI transcription + LeMUR summarization with automatic local fallback |
+| 🤖 **Fully Automated** | Joins the meeting, records, transcribes, summarizes — zero manual intervention |
+| 🎙️ **System Audio Capture** | Records what you *hear* (system audio via PulseAudio monitor), not microphone input |
+| 🧠 **Local LLM Summarization** | Uses Ollama with phi/mistral models as fallback summarization engine |
+| 🗣️ **Whisper STT** | OpenAI Whisper running locally as transcription fallback |
 | 🌐 **Web UI** | React-based frontend for joining/scheduling meetings and viewing results |
 | 📊 **Structured Output** | JSON output with summary, action items, responsible persons, deadlines |
-| ⏱️ **Meeting Scheduling** | Schedule meetings to auto-join at a specific time |
+| ⏱️ **Meeting Scheduling** | Schedule meetings to auto-join at a specific time with live countdown |
 | 🔄 **Offline Pipeline** | CLI tool for processing pre-recorded audio files |
-| ☁️ **Cloud STT Option** | Optional OpenAI API-based transcription as an alternative to local Whisper |
+| 📓 **Notion Integration** | Automatically creates meeting pages in Notion with summary + tasks table |
+| 📅 **Google Calendar Integration** | Creates calendar events for upcoming action item deadlines |
+| 👤 **Multi-Account Support** | Select from multiple Google accounts in the frontend |
 
 ---
 
 ## 🏗️ System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AUTOMATED MEETING ASSISTANT                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   ┌──────────────┐       ┌──────────────────┐       ┌──────────────────┐   │
-│   │   Frontend    │       │   Automation      │       │   PulseAudio     │   │
-│   │   (React)     │──────▶│   Service         │──────▶│   Monitor        │   │
-│   │   :3000       │  API  │   (Node.js)       │ Audio │   + ffmpeg       │   │
-│   └──────────────┘       │   :4001            │       └────────┬─────────┘   │
-│                           └────────┬───────────┘                │             │
-│                                    │                            │             │
-│                                    │ On meeting end             │ Records     │
-│                                    ▼                            ▼             │
-│                           ┌──────────────────┐       ┌──────────────────┐   │
-│                           │   STT Client      │       │ logs/recordings/ │   │
-│                           │   (sttClient.js)  │       │   .wav files     │   │
-│                           └────────┬───────────┘       └────────┬─────────┘   │
-│                                    │                            │             │
-│                    ┌───────────────┼────────────────────────────┘             │
-│                    │               │                                          │
-│                    ▼               ▼                                          │
-│   ┌──────────────────┐   ┌──────────────────┐                               │
-│   │  Local STT        │   │  Cloud STT        │                               │
-│   │  (FastAPI+Whisper)│   │  (OpenAI API)     │                               │
-│   │  :6000            │   │  :5002            │                               │
-│   └────────┬───────────┘   └────────┬───────────┘                               │
-│            │                        │                                          │
-│            └────────────┬───────────┘                                          │
-│                         │  Transcript                                         │
-│                         ▼                                                     │
-│            ┌──────────────────┐       ┌──────────────────┐                   │
-│            │   NLP Service     │──────▶│   Ollama          │                   │
-│            │   (Node.js)       │  API  │   (Local LLM)     │                   │
-│            │   :7000           │       │   :11434           │                   │
-│            └────────┬───────────┘       └──────────────────┘                   │
-│                     │                                                         │
-│                     ▼                                                         │
-│            ┌──────────────────┐                                               │
-│            │  Structured JSON  │                                               │
-│            │  Output           │                                               │
-│            │  ┌─────────────┐  │                                               │
-│            │  │ Summary     │  │                                               │
-│            │  │ Action Items│  │                                               │
-│            │  │ Deadlines   │  │                                               │
-│            │  │ Dates       │  │                                               │
-│            │  └─────────────┘  │                                               │
-│            └──────────────────┘                                               │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                         AUTOMATED MEETING ASSISTANT                          │
+├───────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌──────────────┐       ┌──────────────────┐       ┌──────────────────┐      │
+│  │   Frontend    │       │   Automation      │       │   PulseAudio     │      │
+│  │   (React)     │──────▶│   Service         │──────▶│   Monitor        │      │
+│  │   :3000       │  API  │   (Node.js)       │ Audio │   + ffmpeg       │      │
+│  └──────────────┘       │   :4001            │       └────────┬─────────┘      │
+│                          └────────┬───────────┘                │               │
+│                                   │                            │               │
+│                                   │ On meeting end             │ Records       │
+│                                   ▼                            ▼               │
+│                          ┌──────────────────┐       ┌──────────────────┐      │
+│                          │   STT Client      │       │ logs/recordings/ │      │
+│                          │   (sttClient.js)  │       │   .wav files     │      │
+│                          └────────┬───────────┘       └─────────────────┘      │
+│                                   │                                            │
+│                                   ▼                                            │
+│                   ┌─────────────────────────────┐                             │
+│                   │  Hybrid STT Service (:5002) │                             │
+│                   │  ┌─────────┐  ┌───────────┐ │                             │
+│                   │  │AssemblyAI│  │ Local STT │ │                             │
+│                   │  │  Cloud   │  │ (Whisper) │ │                             │
+│                   │  │ + LeMUR  │  │  :6000    │ │                             │
+│                   │  └────┬─────┘  └─────┬─────┘ │                             │
+│                   │       │  fallback ──▶ │       │                             │
+│                   └───────┴──────────────┴───────┘                             │
+│                                   │                                            │
+│                                   │ Transcript + Summary                       │
+│                                   ▼                                            │
+│                   ┌──────────────────────────────┐                             │
+│                   │  NLP Service (:7000)          │                             │
+│                   │  ┌──────────┐ ┌────────────┐ │                             │
+│                   │  │ Ollama   │ │Integrations│ │                             │
+│                   │  │ :11434   │ │            │ │                             │
+│                   │  └──────────┘ │ ┌────────┐ │ │                             │
+│                   │               │ │ Notion │ │ │                             │
+│                   │               │ ├────────┤ │ │                             │
+│                   │               │ │Calendar│ │ │                             │
+│                   │               │ └────────┘ │ │                             │
+│                   │               └────────────┘ │                             │
+│                   └──────────────────────────────┘                             │
+│                                   │                                            │
+│                                   ▼                                            │
+│                   ┌──────────────────────────────┐                             │
+│                   │  Structured JSON Output       │                             │
+│                   │  ┌─────────────────────────┐  │                             │
+│                   │  │ Cleaned Transcript       │  │                             │
+│                   │  │ Meeting Summary          │  │                             │
+│                   │  │ Action Items + Deadlines │  │                             │
+│                   │  └─────────────────────────┘  │                             │
+│                   └──────────────────────────────┘                             │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Data Flow
 
 ```
 Google Meet → Brave Browser → PulseAudio Monitor → ffmpeg → .wav file
-    → Whisper (local STT) → Raw Transcript
-    → Ollama (local LLM) → Structured JSON (summary + action items + dates)
+    → Hybrid STT (AssemblyAI → local Whisper fallback) → Raw Transcript
+    → Summarization (LeMUR → Ollama fallback) → Structured JSON
+    → Integrations (Notion page + Google Calendar events)
 ```
 
 ---
@@ -143,36 +161,43 @@ automated-meeting-assistant/
 ├── automation-service/          # 🤖 Browser automation + audio recording
 │   ├── src/
 │   │   ├── server.js            #    Express server (port 4001)
-│   │   └── joinMeeting.js       #    Playwright meeting automation logic
-│   ├── sttClient.js             #    STT + NLP pipeline trigger
-│   ├── package.json             #    Node.js dependencies
-│   └── logs/                    #    Service-level logs
+│   │   └── joinMeeting.js       #    Playwright meeting automation + ffmpeg recording
+│   ├── sttClient.js             #    STT + NLP pipeline trigger (calls hybrid STT)
+│   ├── package.json
+│   └── logs/
 │
-├── local-stt-service/           # 🗣️ Local Whisper speech-to-text
-│   ├── app.py                   #    FastAPI server (port 6000)
-│   └── transcripts/             #    Saved transcript text files
-│
-├── nlp-service/                 # 🧠 LLM summarization via Ollama
-│   ├── index.js                 #    Express server (port 7000)
-│   ├── summarizer.js            #    Ollama integration + prompt engineering
-│   ├── package.json             #    Node.js dependencies
-│   └── transcripts/             #    Saved NLP analysis JSON files
-│
-├── stt-service/                 # ☁️ Cloud STT (OpenAI API) — alternative
+├── stt-service/                 # ☁️ Hybrid STT pipeline (AssemblyAI + local fallback)
 │   ├── index.js                 #    Express server (port 5002)
-│   ├── routes.js                #    API route definitions
+│   ├── routes.js                #    /api/stt/transcribe, /api/stt/process
 │   ├── stt.controller.js        #    Request handler
-│   ├── stt.service.js           #    OpenAI Whisper API integration
-│   └── package.json             #    Node.js dependencies
+│   ├── orchestrator.js          #    Hybrid fallback: AssemblyAI → LeMUR → Ollama → Whisper
+│   ├── assemblyai.service.js    #    AssemblyAI transcription + LeMUR summarization
+│   ├── local.service.js         #    Local Whisper + Ollama fallback
+│   ├── package.json
+│   └── transcripts/
+│
+├── local-stt-service/           # 🗣️ Local Whisper speech-to-text (FastAPI)
+│   ├── app.py                   #    FastAPI server (port 6000)
+│   └── transcripts/
+│
+├── nlp-service/                 # 🧠 LLM summarization + integrations
+│   ├── index.js                 #    Express server (port 7000)
+│   ├── summarizer.js            #    Ollama prompt engineering
+│   ├── config.js                #    Notion + Google Calendar credentials
+│   ├── routes/
+│   │   ├── notion.js            #    POST /notion — Notion meeting page
+│   │   └── calendar.js          #    POST /calendar — Google Calendar events
+│   ├── services/
+│   │   ├── notionService.js     #    Notion API client
+│   │   └── calendarService.js   #    Google Calendar API client
+│   ├── package.json
+│   └── transcripts/
 │
 ├── frontend/                    # 🌐 React web interface
 │   ├── src/
-│   │   ├── App.jsx              #    Main app with routing
-│   │   ├── main.jsx             #    Entry point
-│   │   ├── styles.css           #    Global styles
-│   │   ├── api/
-│   │   │   └── meeting.js       #    API client for automation service
-│   │   ├── components/          #    Reusable UI components
+│   │   ├── App.jsx              #    HashRouter routing
+│   │   ├── api/meeting.js       #    API client
+│   │   ├── components/
 │   │   │   ├── AccountSelector.jsx
 │   │   │   ├── ActionItemsViewer.jsx
 │   │   │   ├── MeetingForm.jsx
@@ -181,40 +206,33 @@ automated-meeting-assistant/
 │   │   │   ├── StatusDisplay.jsx
 │   │   │   ├── SummaryViewer.jsx
 │   │   │   └── TranscriptViewer.jsx
-│   │   └── pages/               #    Page-level components
+│   │   └── pages/
 │   │       ├── SchedulerForm.jsx
 │   │       ├── MeetingsPage.jsx
 │   │       └── MeetingDetails.jsx
-│   ├── index.html
-│   ├── vite.config.js
+│   ├── vite.config.js           #    Port 3000
 │   └── package.json
 │
-├── app/                         # 🐍 Python offline pipeline module
-│   ├── config.py                #    Centralized configuration
-│   ├── transcriber.py           #    Whisper transcription logic
-│   ├── summarizer.py            #    Ollama summarization logic
-│   ├── storage.py               #    JSON result persistence
-│   └── pipeline.py              #    End-to-end orchestrator
+├── app/                         # 🐍 Python offline pipeline
+│   ├── config.py
+│   ├── transcriber.py
+│   ├── summarizer.py
+│   ├── storage.py
+│   └── pipeline.py
 │
-├── scripts/                     # 🛠️ Utility scripts
+├── scripts/
 │   └── run_offline_test.py      #    CLI for offline audio processing
 │
-├── tests/                       # 🧪 Test suite
-│   ├── conftest.py              #    Pytest fixtures
-│   ├── test_pipeline.py         #    Pipeline unit & integration tests
-│   └── recordings/              #    Test audio files (.wav)
+├── tests/
+│   ├── conftest.py
+│   ├── test_pipeline.py
+│   └── recordings/
 │
-├── logs/
-│   └── recordings/              # 🎵 Recorded meeting audio files
-│
+├── logs/recordings/             # 🎵 Recorded meeting audio files
 ├── output/                      # 📊 Offline pipeline JSON results
-│
-├── requirements.txt             # 🐍 Python dependencies
-├── package.json                 # 📦 Root Node.js package
-├── pytest.ini                   # 🧪 Pytest configuration
-├── setup-and-run.ps1            # ⚙️ Windows setup & launch script
-├── start.ps1                    # 🚀 Quick launcher script
-└── README.md                    # 📖 This file
+├── requirements.txt
+├── package.json
+└── pytest.ini
 ```
 
 ---
@@ -225,7 +243,7 @@ automated-meeting-assistant/
 
 | Technology | Version | Purpose |
 |---|---|---|
-| **Node.js** | 18+ | Backend services (automation, NLP, cloud STT) |
+| **Node.js** | 18+ | Backend services (automation, STT orchestration, NLP) |
 | **Python** | 3.10+ | Local STT service, offline pipeline |
 | **React** | 18.x | Frontend web interface |
 | **Vite** | 5.x | Frontend build tool |
@@ -234,9 +252,11 @@ automated-meeting-assistant/
 
 | Technology | Purpose |
 |---|---|
-| **OpenAI Whisper** | Local speech-to-text transcription |
-| **Ollama** | Local LLM inference engine |
-| **phi / mistral** | LLM models for summarization and extraction |
+| **AssemblyAI** | Cloud speech-to-text transcription (primary) |
+| **AssemblyAI LeMUR** | Cloud-based meeting summarization (Anthropic Claude 3.5 Sonnet) |
+| **OpenAI Whisper** | Local speech-to-text transcription (fallback) |
+| **Ollama** | Local LLM inference engine (fallback summarization) |
+| **phi / mistral** | LLM models for local summarization |
 | **PyTorch** | Whisper model runtime (CPU / CUDA) |
 
 ### Browser Automation
@@ -244,7 +264,7 @@ automated-meeting-assistant/
 | Technology | Purpose |
 |---|---|
 | **Playwright** | Browser automation library |
-| **Brave Browser** | Chromium-based browser (uses persistent user profile) |
+| **Brave Browser** | Chromium-based browser (persistent user profile) |
 | **xvfb-run** | Virtual framebuffer for headless browser execution |
 
 ### Audio Processing
@@ -254,20 +274,25 @@ automated-meeting-assistant/
 | **ffmpeg** | Audio recording (PulseAudio source) and format conversion |
 | **PulseAudio** | System audio capture via monitor source |
 
+### Integrations
+
+| Technology | Purpose |
+|---|---|
+| **Notion API** (`@notionhq/client`) | Create meeting pages with summaries and tasks tables |
+| **Google Calendar API** (`googleapis`) | Create calendar events for action item deadlines |
+
 ### Frameworks & Libraries
 
 | Technology | Purpose |
 |---|---|
 | **Express.js** | REST API framework (Node.js services) |
 | **FastAPI** | REST API framework (Python STT service) |
-| **React Router** | Client-side routing |
+| **React Router** | Client-side routing (HashRouter) |
 | **Uvicorn** | ASGI server for FastAPI |
 
 ---
 
 ## 📋 Prerequisites
-
-Before installing, ensure the following are available on your system:
 
 ### System Requirements
 
@@ -279,25 +304,12 @@ Before installing, ensure the following are available on your system:
 ### Required Software
 
 ```bash
-# Node.js 18+
-node --version    # v18.x or higher
-
-# Python 3.10+
-python3 --version # 3.10 or higher
-
-# ffmpeg
+node --version       # v18.x or higher
+python3 --version    # 3.10 or higher
 ffmpeg -version
-
-# PulseAudio
 pulseaudio --check
-
-# Brave Browser
 brave-browser --version
-
-# Ollama
 ollama --version
-
-# xvfb (for headless browser)
 which xvfb-run
 ```
 
@@ -306,12 +318,7 @@ which xvfb-run
 ```bash
 # System packages
 sudo apt update && sudo apt install -y \
-    ffmpeg \
-    pulseaudio \
-    xvfb \
-    python3-pip \
-    python3-venv \
-    curl
+    ffmpeg pulseaudio xvfb python3-pip python3-venv curl
 
 # Brave Browser
 sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
@@ -343,171 +350,72 @@ cd automated-meeting-assistant
 ### 2. Install Python Dependencies
 
 ```bash
-# Create a virtual environment (recommended)
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
-
-> **Note:** The first time Whisper runs, it will automatically download the model (~461 MB for `small`). Ensure you have internet access for this initial setup.
 
 ### 3. Install Node.js Dependencies
 
 ```bash
-# Automation service
-cd automation-service
-npm install
-npx playwright install chromium
-cd ..
-
-# NLP service
-cd nlp-service
-npm install
-cd ..
-
-# Frontend
-cd frontend
-npm install
-cd ..
-
-# (Optional) Cloud STT service
-cd stt-service
-npm install
-cd ..
+cd automation-service && npm install && npx playwright install chromium && cd ..
+cd stt-service && npm install && cd ..
+cd nlp-service && npm install && cd ..
+cd frontend && npm install && cd ..
 ```
 
 ### 4. Pull an Ollama Model
 
 ```bash
-# Start Ollama (if not already running)
-ollama serve
-
-# Pull the phi model (lightweight, fast)
+ollama serve &
 ollama pull phi
-
-# Or pull mistral (more capable, requires more RAM)
-ollama pull mistral
 ```
 
-### 5. Verify PulseAudio Monitor Source
+### 5. Configure Environment Variables
+
+**`stt-service/.env`:**
+```env
+ASSEMBLYAI_API_KEY=your_assemblyai_api_key_here
+```
+
+**`nlp-service/.env`:**
+```env
+NOTION_API_KEY=your_notion_api_key_here
+NOTION_DATABASE_ID=your_notion_database_id_here
+GOOGLE_CLIENT_EMAIL=your-service-account@project.iam.gserviceaccount.com
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+GOOGLE_CALENDAR_ID=your_calendar_id@group.calendar.google.com
+```
+
+### 6. Verify PulseAudio Monitor Source
 
 ```bash
-# List available audio sources
 pactl list short sources
-
-# Look for a line like:
-# alsa_output.pci-0000_00_05.0.analog-stereo.monitor
+# Look for: alsa_output.pci-0000_00_05.0.analog-stereo.monitor
 ```
 
-> **Important:** The automation service uses `alsa_output.pci-0000_00_05.0.analog-stereo.monitor` as the audio input source. If your system has a different monitor source name, update it in `automation-service/src/joinMeeting.js`.
+> If your monitor source name differs, update it in `automation-service/src/joinMeeting.js`.
 
 ---
 
 ## 🚀 How to Run the Full System
 
-### Service Overview
-
 | Service | Port | Command |
 |---|---|---|
 | Ollama | `11434` | `ollama serve` |
-| Local STT | `6000` | `uvicorn app:app --host 0.0.0.0 --port 6000` |
-| NLP Service | `7000` | `node index.js` |
-| Automation | `4001` | `node src/server.js` |
-| Frontend | `3000` | `npm run dev` |
+| Local STT | `6000` | `cd local-stt-service && uvicorn app:app --host 0.0.0.0 --port 6000` |
+| Hybrid STT | `5002` | `cd stt-service && node index.js` |
+| NLP Service | `7000` | `cd nlp-service && node index.js` |
+| Automation | `4001` | `cd automation-service && node src/server.js` |
+| Frontend | `3000` | `cd frontend && npm run dev` |
 
-You will need **five separate terminal sessions** (or use `tmux` / background processes).
+Start each in a separate terminal (or use `tmux`), then open **http://localhost:3000**.
 
-### Step 1: Start Ollama
+### Join a Meeting
 
-```bash
-# Terminal 1 — Start the Ollama server
-ollama serve
+**Via Web UI:** Paste a Google Meet link → Click "Join Now"
 
-# Verify it's running (from another terminal)
-curl http://localhost:11434/api/tags
-```
-
-### Step 2: Start the Local STT Service
-
-```bash
-# Terminal 2
-cd local-stt-service
-
-# Activate Python virtual environment
-source ../venv/bin/activate
-
-# Start the FastAPI server
-uvicorn app:app --host 0.0.0.0 --port 6000 --reload
-
-# Verify it's running
-# Open http://localhost:6000/docs in a browser for Swagger UI
-```
-
-> The first transcription request will trigger Whisper model download if not already cached.
-
-### Step 3: Start the NLP Service
-
-```bash
-# Terminal 3
-cd nlp-service
-
-# Start the Express server
-node index.js
-
-# Expected output:
-# NLP service listening on port 7000
-```
-
-**Verify:**
-```bash
-curl http://localhost:7000/health
-```
-
-### Step 4: Start the Automation Service
-
-```bash
-# Terminal 4
-cd automation-service
-
-# Start the Express server
-node src/server.js
-
-# Expected output:
-# Automation service listening on port 4001
-```
-
-**Verify:**
-```bash
-curl http://localhost:4001/health
-```
-
-### Step 5: Start the Frontend
-
-```bash
-# Terminal 5
-cd frontend
-
-# Start the Vite dev server
-npm run dev
-
-# Expected output:
-#   VITE v5.x.x  ready in xxx ms
-#   ➜  Local:   http://localhost:3000/
-```
-
-### Step 6: Join a Meeting
-
-**Option A — Via the Web UI:**
-
-1. Open `http://localhost:3000` in your browser.
-2. Paste a Google Meet link (e.g., `https://meet.google.com/abc-defg-hij`).
-3. Click **"Join Now"** or schedule it for later.
-4. The system will automatically join, record, transcribe, and summarize.
-
-**Option B — Via the API directly:**
-
+**Via API:**
 ```bash
 curl -X POST http://localhost:4001/api/meetings \
   -H "Content-Type: application/json" \
@@ -518,91 +426,43 @@ curl -X POST http://localhost:4001/api/meetings \
   }'
 ```
 
-> **Important:** Ensure you are logged into Google in Brave Browser before running the automation. The service uses your existing browser profile (persistent cookies) to authenticate.
-
 ---
 
 ## 🎙️ Audio Configuration Details
 
 ### PulseAudio Monitor Source
 
-The system captures **system audio** (what you hear through speakers/headphones) rather than microphone input. This is done via PulseAudio's **monitor source**.
-
-#### How It Works
+The system captures **system audio** via PulseAudio's monitor source:
 
 ```
 Google Meet Audio → PulseAudio Sink → Monitor Source → ffmpeg → .wav file
 ```
 
-1. **PulseAudio Sink** — The audio output device (speakers/headphones).
-2. **Monitor Source** — A virtual input that mirrors everything played through the sink.
-3. **ffmpeg** — Reads from the monitor source and writes a WAV file.
-
-#### The ffmpeg Recording Command
-
+**ffmpeg recording command:**
 ```bash
 ffmpeg -f pulse \
   -i alsa_output.pci-0000_00_05.0.analog-stereo.monitor \
-  -ac 1 \
-  -ar 16000 \
-  -c:a pcm_s16le \
+  -ac 1 -ar 16000 -c:a pcm_s16le \
   logs/recordings/meeting-<timestamp>.wav
 ```
 
-| Parameter | Value | Purpose |
-|---|---|---|
-| `-f pulse` | — | Use PulseAudio as input format |
-| `-i` | `alsa_output.pci-0000_00_05.0.analog-stereo.monitor` | PulseAudio monitor source name |
-| `-ac 1` | Mono | Single audio channel (Whisper works best with mono) |
-| `-ar 16000` | 16 kHz | Sample rate optimized for Whisper |
-| `-c:a pcm_s16le` | PCM 16-bit | Uncompressed audio codec |
+| Parameter | Purpose |
+|---|---|
+| `-f pulse` | PulseAudio input |
+| `-ac 1` | Mono (optimized for Whisper) |
+| `-ar 16000` | 16 kHz sample rate |
+| `-c:a pcm_s16le` | PCM 16-bit uncompressed |
 
-#### Finding Your Monitor Source
-
+**Find your monitor source:**
 ```bash
-# List all PulseAudio sources
 pactl list short sources
-
-# Example output:
-# 0  alsa_output.pci-0000_00_05.0.analog-stereo.monitor  module-alsa-card.c  s16le 2ch 44100Hz  RUNNING
-
-# Or use pacmd for detailed info
-pacmd list-sources | grep -e 'name:' -e 'index:'
-```
-
-If your monitor source name is different, update the PulseAudio monitor value in:
-
-📍 `automation-service/src/joinMeeting.js` — look for the ffmpeg spawn command.
-
-#### Verifying a Recorded Audio File
-
-```bash
-# Check audio file properties with full detail
-ffprobe -v quiet -print_format json -show_format -show_streams \
-  logs/recordings/meeting-1234567890.wav
-
-# Expected output should show:
-# codec_name: pcm_s16le
-# sample_rate: 16000
-# channels: 1
-```
-
-```bash
-# Quick verification (one-liner)
-ffprobe logs/recordings/meeting-1234567890.wav 2>&1 | grep -E "Stream|Duration"
-
-# Expected:
-# Duration: 00:05:23.45, bitrate: 256 kb/s
-# Stream #0:0: Audio: pcm_s16le, 16000 Hz, mono, s16, 256 kb/s
 ```
 
 ---
 
 ## 🗣️ Whisper Configuration Details
 
-### Model Selection
-
-| Model | Parameters | VRAM | Relative Speed | English Accuracy |
+| Model | Parameters | VRAM | Speed | Accuracy |
 |---|---|---|---|---|
 | `tiny` | 39 M | ~1 GB | ~32x | Lowest |
 | `base` | 74 M | ~1 GB | ~16x | Low |
@@ -610,99 +470,75 @@ ffprobe logs/recordings/meeting-1234567890.wav 2>&1 | grep -E "Stream|Duration"
 | `medium` | 769 M | ~5 GB | ~2x | Better |
 | `large` | 1550 M | ~10 GB | 1x | Best |
 
-> The **`small`** model is the default for the local STT service — it provides a good balance of speed and accuracy for meeting transcription.
-
-### Configuration via Environment Variables
-
 | Variable | Default | Description |
 |---|---|---|
-| `WHISPER_MODEL_NAME` | `small` | Primary Whisper model |
-| `WHISPER_MODEL_FALLBACK` | `base` | Fallback model (used on OOM errors) |
-| `WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` (auto-detects GPU) |
-| `MAX_AUDIO_FILE_SIZE_MB` | `200` | Maximum audio file size in MB |
-| `MAX_CONCURRENT_TRANSCRIPTIONS` | `auto` | Semaphore limit (defaults to CPU count) |
-
-### Transcription Settings
-
-```python
-model.transcribe(
-    audio_path,
-    language="en",       # English language
-    fp16=False,          # Use FP32 (more compatible, slightly slower)
-    temperature=0        # Deterministic output (no randomness)
-)
-```
-
-### Audio Preprocessing
-
-Before transcription, audio is automatically preprocessed via ffmpeg to ensure compatibility:
-
-```bash
-ffmpeg -y -i input.wav -ar 16000 -ac 1 -acodec pcm_s16le preprocessed.wav
-```
-
-This ensures the audio matches Whisper's expected format regardless of the original input format.
+| `WHISPER_MODEL_NAME` | `small` | Primary model |
+| `WHISPER_MODEL_FALLBACK` | `base` | Fallback on OOM |
+| `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` / `auto` |
 
 ---
 
 ## 🧠 NLP Service Details
 
-### Overview
-
-The NLP service receives a raw transcript and produces structured meeting intelligence using a local LLM via Ollama.
-
-### LLM Configuration
+The NLP service uses Ollama to produce structured meeting intelligence:
 
 | Setting | Value |
 |---|---|
 | **Ollama URL** | `http://localhost:11434/api/generate` |
-| **Default Model** | `phi` (or `mistral`) |
-| **Timeout** | 180 seconds (3 minutes) |
-| **Response Format** | JSON mode (`format: "json"`) |
-| **Retries** | 2 attempts on failure |
-| **Min Transcript Length** | 50 characters |
+| **Default Model** | `phi` |
+| **Timeout** | 300 seconds |
+| **Min Transcript** | 50 characters |
 
-### Prompt Engineering
-
-The NLP service uses a carefully crafted prompt that instructs the LLM to:
-
-1. **Clean** minor transcription errors (stutters, repeated words).
-2. **Summarize** the meeting in 3–6 concise sentences.
-3. **Extract action items** with task description, responsible person, and deadline.
-4. **Identify important dates** and milestones mentioned in the meeting.
-
-### Output JSON Schema
+### Output Schema
 
 ```json
 {
-  "cleaned_transcript": "Full cleaned transcript text...",
-  "summary": "Concise 3-6 sentence meeting summary...",
+  "cleaned_transcript": "Full cleaned transcript...",
+  "summary": "Comprehensive meeting summary...",
   "action_items": [
-    {
-      "task": "Complete the Q4 budget report",
-      "responsible": "John",
-      "deadline": "March 15, 2026"
-    },
-    {
-      "task": "Schedule a follow-up meeting with the design team",
-      "responsible": "Sarah",
-      "deadline": "Next Monday"
-    }
-  ],
-  "important_dates": [
-    "March 15, 2026 — Q4 budget report deadline",
-    "April 1, 2026 — Product launch date"
+    { "task": "...", "responsible": "...", "deadline": "..." }
   ]
 }
 ```
 
-### Transcript Preprocessing Pipeline
+---
 
-Before sending to the LLM, the transcript undergoes preprocessing:
+## 🔀 Hybrid STT Pipeline
 
-1. **Whitespace normalization** — collapses multiple spaces and newlines.
-2. **Duplicate word removal** — removes repeated adjacent words (common in speech-to-text).
-3. **Punctuation cleanup** — fixes spacing around punctuation marks.
+The `stt-service` orchestrates a multi-level fallback strategy:
+
+```
+1. Try AssemblyAI transcription
+   ├── Success → Try AssemblyAI LeMUR summarization
+   │              ├── Success → Return (source: "assemblyai")
+   │              └── Failure → Ollama summarization (source: "assemblyai+ollama")
+   └── Failure → Full local pipeline
+                  ├── Whisper transcription (local-stt-service :6000)
+                  └── Ollama summarization (source: "local")
+```
+
+After summarization (any source), results are pushed to Notion + Google Calendar in the background.
+
+---
+
+## 🔗 Integrations
+
+### Notion
+
+Creates a meeting page per session with:
+- "Summary" heading + paragraph text
+- "Tasks & Deadlines" table (Task | Deadline columns)
+
+**Setup:** Create integration at [notion.so/my-integrations](https://www.notion.so/my-integrations), share your database with it.
+
+### Google Calendar
+
+Creates calendar events for action item deadlines:
+- All-day events for date-only deadlines
+- 1-hour events for specific times
+- Only upcoming dates (past dates are skipped)
+
+**Setup:** Create a service account in Google Cloud, enable Calendar API, share calendar with the service account.
 
 ---
 
@@ -716,512 +552,152 @@ Before sending to the LLM, the transcript undergoes preprocessing:
 | `GET` | `/health` | Health check |
 | `POST` | `/api/meetings` | Join a Google Meet session |
 
-#### `POST /api/meetings`
+### Hybrid STT Service (`:5002`)
 
-**Request:**
-```json
-{
-  "url": "https://meet.google.com/abc-defg-hij",
-  "braveExecutable": "/usr/bin/brave-browser",
-  "userDataDir": "/home/user/.config/BraveSoftware/Brave-Browser/Default"
-}
-```
-
-**Response (`202 Accepted`):**
-```json
-{
-  "started": true,
-  "pid": 12345,
-  "log": "logs/meeting-1234567890.log"
-}
-```
-
----
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/` | Service info + AssemblyAI status |
+| `POST` | `/api/stt/transcribe` | Hybrid transcription + summarization |
+| `POST` | `/api/stt/process` | Alias for transcribe |
 
 ### Local STT Service (`:6000`)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/docs` | Interactive API documentation (Swagger UI) |
-| `GET` | `/redoc` | API documentation (ReDoc format) |
-| `POST` | `/transcribe` | Transcribe an audio file using Whisper |
-
-#### `POST /transcribe`
-
-**Request:**
-```json
-{
-  "meetingId": "meeting-1234567890",
-  "audioFilePath": "/absolute/path/to/recording.wav"
-}
-```
-
-**Response (`200 OK`):**
-```json
-{
-  "success": true,
-  "transcript": "Hello everyone, welcome to today's meeting..."
-}
-```
-
-**Error Responses:**
-
-| Status | Cause |
-|---|---|
-| `404` | Audio file not found at the specified path |
-| `413` | Audio file exceeds the 200 MB size limit |
-| `500` | Internal transcription error |
-
----
+| `POST` | `/transcribe` | Local Whisper transcription |
 
 ### NLP Service (`:7000`)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/summarize` | Summarize a transcript using Ollama LLM |
+| `GET` | `/` | Health check |
+| `POST` | `/summarize` | Summarize via Ollama |
+| `POST` | `/integrations/ingest` | Push summary to Notion + Calendar |
+| `POST` | `/notion` | Create Notion meeting page |
+| `POST` | `/calendar` | Create Google Calendar events |
 
-#### `POST /summarize`
-
-**Request:**
-```json
-{
-  "transcript": "Full meeting transcript text..."
-}
-```
-
-**Response (`200 OK`):**
-```json
-{
-  "success": true,
-  "result": {
-    "cleaned_transcript": "Cleaned version of the transcript...",
-    "summary": "The team discussed Q4 goals and agreed on...",
-    "action_items": [
-      {
-        "task": "Prepare the budget report",
-        "responsible": "Alice",
-        "deadline": "March 10"
-      }
-    ],
-    "important_dates": [
-      "March 10 — Budget report due"
-    ]
-  }
-}
-```
-
----
-
-### Cloud STT Service (`:5002`) — Optional
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/stt/transcribe` | Transcribe audio via OpenAI API |
-
-#### `POST /api/stt/transcribe`
-
-**Request:**
-```json
-{
-  "meetingId": "meeting-1234567890",
-  "audioFilePath": "/absolute/path/to/recording.wav"
-}
-```
-
-**Response (`200 OK`):**
-```json
-{
-  "success": true,
-  "transcript": "Transcribed text...",
-  "summary": { "..." },
-  "summaryError": null
-}
-```
-
-> **Note:** Requires `OPENAI_API_KEY` environment variable. Uses the `gpt-4o-transcribe` model.
+> Full request/response schemas are in [API-REFERENCE.md](API-REFERENCE.md).
 
 ---
 
 ## 📐 Example Workflow
 
-### End-to-End Meeting Processing
-
 ```
- 1. User opens http://localhost:3000
-                  │
-                  ▼
- 2. Pastes Google Meet link → Clicks "Join Now"
-                  │
-                  ▼
- 3. Frontend sends POST /api/meetings to automation-service (:4001)
-                  │
-                  ▼
- 4. Playwright launches Brave Browser (with user's Google profile)
-                  │
-                  ▼
- 5. Bot navigates to Google Meet → disables camera/mic → clicks "Join"
-                  │
-                  ▼
- 6. ffmpeg starts recording system audio via PulseAudio monitor
-    └── Output: logs/recordings/meeting-<id>.wav (16kHz, mono, PCM)
-                  │
-                  ▼
- 7. Meeting proceeds... (bot waits for meeting to end)
-                  │
-                  ▼
- 8. Meeting ends → ffmpeg receives SIGINT → recording stops
-                  │
-                  ▼
- 9. sttClient.js sends audio path to local-stt-service (:6000)
-    └── Whisper (small model) transcribes audio → returns text
-                  │
-                  ▼
-10. sttClient.js sends transcript to nlp-service (:7000)
-    └── Ollama (phi model) generates summary + action items
-                  │
-                  ▼
-11. Results saved to nlp-service/transcripts/meeting_<id>.json
-                  │
-                  ▼
-12. User views results in the frontend:
-    ├── 📝 Full transcript
-    ├── 📄 AI-generated summary
-    ├── ✅ Action items with owners & deadlines
-    └── 📅 Important dates
-```
-
-### Sample Output JSON
-
-```json
-{
-  "meeting_id": "meeting-1771823230527",
-  "created_at": "20260224T103045Z",
-  "transcript": "Hello everyone, welcome to the weekly standup...",
-  "cleaned_transcript": "Hello everyone, welcome to the weekly standup...",
-  "summary": "The team discussed progress on the Q1 product roadmap. Backend API migration is 80% complete and on track for the March 15 deadline. The design team presented new mockups for the onboarding flow. Two critical bugs were identified in the payment module that need immediate attention.",
-  "action_items": [
-    {
-      "task": "Fix payment module bugs",
-      "responsible": "David",
-      "deadline": "February 28, 2026"
-    },
-    {
-      "task": "Complete API migration to v2",
-      "responsible": "Backend Team",
-      "deadline": "March 15, 2026"
-    },
-    {
-      "task": "Review and approve onboarding mockups",
-      "responsible": "Sarah",
-      "deadline": "Next Wednesday"
-    }
-  ],
-  "important_dates": [
-    "February 28, 2026 — Payment bug fix deadline",
-    "March 15, 2026 — API v2 migration deadline",
-    "April 1, 2026 — Q2 planning kickoff"
-  ]
-}
+ 1. User opens http://localhost:3000 → Pastes meeting link → Clicks "Join Now"
+ 2. Automation service launches Brave → disables camera/mic → clicks "Join"
+ 3. ffmpeg records system audio → logs/recordings/meeting-<ts>.wav
+ 4. Meeting ends → ffmpeg stops → sttClient sends audio to hybrid STT (:5002)
+ 5. Hybrid STT: AssemblyAI transcribes + LeMUR summarizes (or local fallback)
+ 6. Summary pushed to Notion (meeting page) + Google Calendar (deadline events)
+ 7. Results saved to nlp-service/transcripts/meeting_<id>.json
+ 8. User views transcript, summary, and action items in the frontend
 ```
 
 ---
 
 ## 🌐 Frontend UI
 
-The web interface is built with **React 18** and **Vite**, providing a clean, modern UI for managing meetings.
-
-### Pages
+Built with **React 18** + **Vite** (port 3000).
 
 | Route | Page | Description |
 |---|---|---|
-| `/` | **Scheduler** | Enter a Google Meet link, join instantly or schedule for later |
-| `/meetings` | **Meetings** | View all scheduled and completed meetings |
-| `/meeting/:id` | **Meeting Details** | View transcript, summary, and action items |
+| `/` | **Scheduler** | Join or schedule meetings |
+| `/meetings` | **Meetings** | Meeting history |
+| `/meeting/:id` | **Details** | Transcript + summary + action items |
 
-### Features
-
-- **Instant Join** — Paste a Meet link and join immediately with one click.
-- **Meeting Scheduling** — Schedule a meeting to auto-join at a specific date/time with a live countdown timer.
-- **Meeting History** — Browse past meetings stored in local storage.
-- **Meeting Insights** — Generate and view AI-powered summaries, action items, and full transcripts.
-- **Status Tracking** — Real-time status display (idle → joining → active → ended).
-- **Responsive Design** — Clean, card-based UI with CSS custom properties.
-
-### Running the Frontend
-
-```bash
-cd frontend
-npm run dev
-# → http://localhost:3000
-```
+**Features:** Instant join, scheduling with countdown, account selection, meeting history, status tracking.
 
 ---
 
 ## 🐍 Offline Pipeline (CLI)
 
-For processing pre-recorded audio files without running the full web service stack:
-
-### Basic Usage
+Process pre-recorded audio without the full service stack:
 
 ```bash
-# Activate virtual environment
 source venv/bin/activate
-
-# Process an audio file
 python scripts/run_offline_test.py path/to/recording.wav
+python scripts/run_offline_test.py recording.wav --whisper-model medium --ollama-model mistral
 ```
-
-### Advanced Options
-
-```bash
-# Custom meeting ID and output directory
-python scripts/run_offline_test.py recording.wav \
-  --meeting-id "standup-2026-02-24" \
-  --output-dir ./results
-
-# Use a different Whisper model
-python scripts/run_offline_test.py recording.wav \
-  --whisper-model medium \
-  --whisper-device cuda
-
-# Use a different Ollama model
-python scripts/run_offline_test.py recording.wav \
-  --ollama-model mistral
-
-# Dry run (process but don't save to disk)
-python scripts/run_offline_test.py recording.wav --no-save
-
-# Debug logging
-python scripts/run_offline_test.py recording.wav --log-level DEBUG
-```
-
-### CLI Arguments Reference
-
-| Argument | Default | Description |
-|---|---|---|
-| `audio_file` | *(required)* | Path to the `.wav` audio file |
-| `--meeting-id` | Auto-generated | Unique meeting identifier |
-| `--output-dir` | `output/` | Directory for JSON output files |
-| `--whisper-model` | `base` | Whisper model size (`tiny` / `base` / `small` / `medium` / `large`) |
-| `--whisper-device` | `auto` | Computation device (`cpu` / `cuda` / `auto`) |
-| `--ollama-url` | `http://localhost:11434/api/generate` | Ollama API endpoint |
-| `--ollama-model` | `phi` | Ollama model name |
-| `--no-save` | `false` | Skip writing result JSON to disk |
-| `--log-level` | `INFO` | Logging verbosity level |
-
-### Offline Pipeline Output
-
-Results are saved as timestamped JSON files in the output directory:
-
-```
-output/
-└── standup-2026-02-24_20260224T103045Z.json
-```
-
-Each file contains the full transcript, cleaned transcript, summary, action items, important dates, and processing metadata (model used, device, durations).
 
 ---
 
 ## 🧪 Testing
 
-### Running Tests
-
 ```bash
-# Activate virtual environment
 source venv/bin/activate
-
-# Run all tests
-pytest
-
-# Run with verbose output
 pytest -v
-
-# Run a specific test class
-pytest tests/test_pipeline.py::TestTranscriber
-pytest tests/test_pipeline.py::TestSummarizer
-pytest tests/test_pipeline.py::TestStorage
-pytest tests/test_pipeline.py::TestPipeline
 ```
 
-### Test Prerequisites
+| Test Class | What It Validates |
+|---|---|
+| `TestTranscriber` | Whisper output, metadata, file-not-found |
+| `TestSummarizer` | LLM response keys, summary length, edge cases |
+| `TestStorage` | JSON save/load, directory creation |
+| `TestPipeline` | End-to-end pipeline, no-save mode |
 
-1. Place at least one `.wav` audio file in `tests/recordings/`.
-2. Ensure Ollama is running with a model pulled (`ollama serve` + `ollama pull phi`).
-3. Ensure `ffmpeg` is installed and accessible in `$PATH`.
+> Full testing guide: [TESTING.md](TESTING.md)
 
-### Test Coverage
+---
 
-| Test Class | Tests | What It Validates |
+## 🔐 Environment Variables
+
+### `stt-service/.env`
+
+| Variable | Default | Description |
 |---|---|---|
-| `TestTranscriber` | 3 | Whisper transcription output, metadata keys, file-not-found handling |
-| `TestSummarizer` | 4 | LLM response keys, summary length, empty/short input validation |
-| `TestStorage` | 3 | Save/load JSON round-trip, directory creation, missing file errors |
-| `TestPipeline` | 3 | Full end-to-end pipeline, no-save mode, JSON serialization |
+| `ASSEMBLYAI_API_KEY` | — | AssemblyAI API key |
+| `ASSEMBLYAI_TIMEOUT_MS` | `600000` | Timeout (ms) |
+| `LOCAL_STT_URL` | `http://localhost:6000/transcribe` | Local Whisper URL |
 
-### Configuration
+### `nlp-service/.env`
 
-Test configuration is defined in `pytest.ini`:
+| Variable | Default | Description |
+|---|---|---|
+| `NOTION_API_KEY` | — | Notion integration token |
+| `NOTION_DATABASE_ID` | — | Notion database ID |
+| `GOOGLE_CLIENT_EMAIL` | — | Service account email |
+| `GOOGLE_PRIVATE_KEY` | — | Service account private key |
+| `GOOGLE_CALENDAR_ID` | — | Target calendar ID |
 
-```ini
-[pytest]
-testpaths = tests
-timeout = 300
-addopts = -v --tb=short
-markers =
-    slow: marks tests as slow (deselect with '-m "not slow"')
-```
+### Local STT (environment)
+
+| Variable | Default | Description |
+|---|---|---|
+| `WHISPER_MODEL_NAME` | `small` | Primary model |
+| `WHISPER_MODEL_FALLBACK` | `base` | Fallback model |
+| `WHISPER_DEVICE` | `auto` | `cpu`/`cuda`/`auto` |
+
+### Automation (environment)
+
+| Variable | Default | Description |
+|---|---|---|
+| `STT_ENDPOINT` | `http://127.0.0.1:5002/api/stt/process` | Hybrid STT URL |
+| `NLP_ENDPOINT` | `http://localhost:7000/summarize` | NLP URL |
 
 ---
 
 ## 🔧 Troubleshooting Guide
 
-### ❌ "No PulseAudio monitor source found"
-
-**Symptom:** ffmpeg fails to start recording with audio source errors.
-
-**Solution:**
-```bash
-# Check if PulseAudio is running
-pulseaudio --check && echo "Running" || echo "Not running"
-
-# Start PulseAudio if not running
-pulseaudio --start
-
-# List available sources and find your monitor
-pactl list short sources
-
-# If your monitor name differs, update it in:
-# automation-service/src/joinMeeting.js
-```
-
----
-
-### ❌ "Whisper model download fails"
-
-**Symptom:** First transcription takes too long or times out.
-
-**Solution:**
-```bash
-# Pre-download the model manually in Python
-python3 -c "import whisper; whisper.load_model('small')"
-
-# For systems with limited RAM, use a smaller model
-export WHISPER_MODEL_NAME=base
-```
-
----
-
-### ❌ "Ollama connection refused"
-
-**Symptom:** NLP service returns 500 errors or connection timeouts.
-
-**Solution:**
-```bash
-# Start Ollama
-ollama serve
-
-# Verify it's running
-curl http://localhost:11434/api/tags
-
-# Pull the required model
-ollama pull phi
-
-# Test generation directly
-curl http://localhost:11434/api/generate \
-  -d '{"model": "phi", "prompt": "Hello", "stream": false}'
-```
-
----
-
-### ❌ "Browser automation fails to join meeting"
-
-**Symptom:** Playwright launches browser but doesn't successfully join the meeting.
-
-**Possible causes & solutions:**
-
-| Cause | Solution |
+| Problem | Solution |
 |---|---|
-| Not logged into Google in Brave | Open Brave manually and sign into Google |
-| Stale browser profile | Ensure `userDataDir` points to your actual Brave profile directory |
-| Meeting requires admission | The bot clicks "Ask to join" — the host must admit it manually |
-| Google Meet UI updated | Check selector logic in `joinMeeting.js` and update as needed |
-
-```bash
-# Verify Brave path
-which brave-browser
-# Expected: /usr/bin/brave-browser
-
-# Verify profile path exists
-ls ~/.config/BraveSoftware/Brave-Browser/Default/
-```
+| No PulseAudio source | `pulseaudio --start && pactl list short sources` |
+| Whisper model download fails | `python3 -c "import whisper; whisper.load_model('small')"` |
+| Ollama connection refused | `ollama serve && ollama pull phi` |
+| Browser won't join | Ensure logged into Google in Brave; check `userDataDir` path |
+| Port already in use | `lsof -ti:<PORT> \| xargs kill -9` |
+| OOM during transcription | `export WHISPER_MODEL_NAME=base WHISPER_DEVICE=cpu` |
+| AssemblyAI fails | Automatic local fallback; check API key and credits |
+| Notion/Calendar fails | Non-blocking; check `.env` credentials and sharing permissions |
 
 ---
 
-### ❌ "ffprobe shows wrong audio format"
+## 📚 Additional Documentation
 
-**Symptom:** Whisper produces poor or garbled transcriptions.
-
-**Solution:**
-```bash
-# Verify the recording format
-ffprobe -v quiet -show_streams logs/recordings/meeting-*.wav \
-  | grep -E "codec_name|sample_rate|channels"
-
-# Expected:
-# codec_name=pcm_s16le
-# sample_rate=16000
-# channels=1
-
-# If incorrect, manually convert the file:
-ffmpeg -i input.wav -ar 16000 -ac 1 -c:a pcm_s16le output.wav
-```
-
----
-
-### ❌ "Port already in use"
-
-**Symptom:** Service fails to start with `EADDRINUSE` or `Address already in use`.
-
-**Solution:**
-```bash
-# Find and kill the process using the port
-lsof -ti:6000 | xargs kill -9    # STT service
-lsof -ti:7000 | xargs kill -9    # NLP service
-lsof -ti:4001 | xargs kill -9    # Automation service
-lsof -ti:3000 | xargs kill -9    # Frontend
-```
-
----
-
-### ❌ "Out of memory during transcription"
-
-**Symptom:** Python process is killed or throws OOM error.
-
-**Solution:**
-```bash
-# Use a smaller Whisper model
-export WHISPER_MODEL_NAME=base    # or tiny
-
-# Or force CPU instead of GPU (slower but uses system RAM)
-export WHISPER_DEVICE=cpu
-```
-
----
-
-### ❌ "NLP service returns empty or malformed JSON"
-
-**Symptom:** Summary is empty, action items are missing, or JSON parsing fails.
-
-**Solution:**
-1. Ensure the transcript is at least 50 characters long.
-2. Try a more capable model:
-   ```bash
-   ollama pull mistral
-   # Then update nlp-service/summarizer.js → change model to "mistral"
-   ```
-3. Check Ollama logs for errors:
-   ```bash
-   journalctl -u ollama -f
-   ```
-
----
+| Document | Description |
+|---|---|
+| [SETUP.md](SETUP.md) | Detailed setup and configuration guide |
+| [COMMANDS.md](COMMANDS.md) | Quick-reference command cheat sheet |
+| [TESTING.md](TESTING.md) | Comprehensive testing guide |
+| [API-REFERENCE.md](API-REFERENCE.md) | Complete API endpoint documentation |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Detailed architecture and integration design |
+| [SYSTEM.md](SYSTEM.md) | System requirements and project specification |
