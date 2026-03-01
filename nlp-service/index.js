@@ -23,13 +23,14 @@ app.get('/', (req, res) => res.json({ success: true, service: 'nlp-service' }));
 async function pushToIntegrations(result) {
 	const integrationResults = { notion: null, calendar: [] };
 
-	// ── Push ONE meeting page to Notion ──
+	// ── Push ONE meeting page to Notion (summary + action items table) ──
 	if (result.summary && typeof result.summary === 'string' && result.summary.trim()) {
 		try {
 			const today = new Date().toISOString().slice(0, 10);
 			const notionResult = await createMeetingPage({
 				meeting_date: result.meeting_date || today,
 				summary: result.summary,
+				action_items: result.action_items || [],
 			});
 			integrationResults.notion = notionResult;
 			console.info('[Integration] Notion push result:', JSON.stringify(notionResult));
@@ -38,17 +39,32 @@ async function pushToIntegrations(result) {
 		}
 	}
 
-	// ── Push action item deadlines to Google Calendar ──
+	// ── Push action item deadlines to Google Calendar (only upcoming dates) ──
 	if (Array.isArray(result.action_items)) {
+		// Start of today (midnight) — deadlines on or after today are considered upcoming
+		const todayStart = new Date();
+		todayStart.setHours(0, 0, 0, 0);
+
 		for (const item of result.action_items) {
 			if (item.deadline) {
+				// Parse the deadline and skip if it's in the past
+				const deadlineDate = new Date(item.deadline);
+				if (isNaN(deadlineDate.getTime())) {
+					console.warn(`[Integration] Skipping unparseable deadline: "${item.deadline}"`);
+					continue;
+				}
+				if (deadlineDate < todayStart) {
+					console.info(`[Integration] Skipping past deadline: "${item.deadline}" (before ${todayStart.toISOString().slice(0, 10)})`);
+					continue;
+				}
+
 				try {
 					const calResult = await createCalendarEvent({
 						calendar_event_title: item.task || 'Action item deadline',
 						calendar_event_date: item.deadline,
 					});
 					integrationResults.calendar.push(calResult);
-					console.info('[Integration] Calendar event created for deadline:', item.deadline, calResult);
+					console.info('[Integration] Calendar event created for upcoming deadline:', item.deadline, calResult);
 				} catch (err) {
 					console.warn(`[Integration] Calendar push failed for deadline "${item.deadline}":`, err?.message || err);
 				}
