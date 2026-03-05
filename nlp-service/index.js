@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const chrono = require('chrono-node');
 const { summarizeTranscript } = require('./summarizer');
 const notionRoutes = require('./routes/notion');
 const calendarRoutes = require('./routes/calendar');
@@ -47,9 +48,13 @@ async function pushToIntegrations(result) {
 
 		for (const item of result.action_items) {
 			if (item.deadline) {
-				// Parse the deadline and skip if it's in the past
-				const deadlineDate = new Date(item.deadline);
+				// Parse the deadline — try native Date first, fall back to chrono-node
+				let deadlineDate = new Date(item.deadline);
 				if (isNaN(deadlineDate.getTime())) {
+					// Try chrono-node for relative dates like "next Monday", "in two weeks"
+					deadlineDate = chrono.parseDate(item.deadline, new Date());
+				}
+				if (!deadlineDate || isNaN(deadlineDate.getTime())) {
 					console.warn(`[Integration] Skipping unparseable deadline: "${item.deadline}"`);
 					continue;
 				}

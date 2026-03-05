@@ -13,6 +13,7 @@
 
 const assemblyai = require("./assemblyai.service");
 const local = require("./local.service");
+const { withRetry } = require("./retry");
 
 const NLP_INTEGRATIONS_URL =
 	process.env.NLP_INTEGRATIONS_URL || "http://localhost:7000/integrations/ingest";
@@ -62,31 +63,47 @@ async function pushIntegrations(summary) {
  */
 async function processMeeting(audioFilePath, meetingId) {
 	let assemblyTranscript = null;
+	let transcribeRetryAttempts = 0;
 
-	// ── 1. Try AssemblyAI transcription ──────────────────────────────────────
+	// ── 1. Try AssemblyAI transcription (with retry) ─────────────────────────
 	try {
 		console.info("[Orchestrator] Attempting AssemblyAI transcription…");
 
-		const { transcriptId, text } = await assemblyai.transcribe(audioFilePath);
-		assemblyTranscript = { transcriptId, text };
+		const result = await withRetry(
+			() => assemblyai.transcribe(audioFilePath),
+			3,  // maxRetries
+			1000 // baseDelayMs → 1s, 2s, 4s
+		);
+		transcribeRetryAttempts = result.retry_attempts || 1;
+		assemblyTranscript = { transcriptId: result.transcriptId, text: result.text };
 
-		console.info("[Orchestrator] AssemblyAI transcription succeeded (id=%s, length=%d)",
-			transcriptId, text.length);
+		console.info("[Orchestrator] AssemblyAI transcription succeeded (id=%s, length=%d, retries=%d)",
+			result.transcriptId, result.text.length, transcribeRetryAttempts);
 	} catch (transcribeError) {
+		transcribeRetryAttempts = transcribeError?.retry_attempts || 0;
 		const reason = transcribeError?.message || String(transcribeError);
-		console.warn("[Orchestrator] AssemblyAI transcription failed: %s", reason);
+		console.warn("[Orchestrator] AssemblyAI transcription failed after %d attempt(s): %s", transcribeRetryAttempts, reason);
 
 		// Transcription failed — fall back to full local pipeline
-		return localFallback(audioFilePath, meetingId, reason);
+		const fallbackResult = await localFallback(audioFilePath, meetingId, reason);
+		fallbackResult.retry_attempts = { transcribe: transcribeRetryAttempts };
+		return fallbackResult;
 	}
 
-	// ── 2. Transcription succeeded — try AssemblyAI LeMUR summarization ─────
+	// ── 2. Transcription succeeded — try AssemblyAI LeMUR summarization (with retry) ─
+	let summarizeRetryAttempts = 0;
 	try {
 		console.info("[Orchestrator] Attempting AssemblyAI LeMUR summarization…");
 
-		const summary = await assemblyai.summarize(assemblyTranscript.transcriptId);
+		const summary = await withRetry(
+			() => assemblyai.summarize(assemblyTranscript.transcriptId),
+			3,
+			1000
+		);
+		summarizeRetryAttempts = summary?.retry_attempts || 1;
 
-		console.info("[Orchestrator] Full AssemblyAI pipeline succeeded.");
+		console.info("[Orchestrator] Full AssemblyAI pipeline succeeded (retries: transcribe=%d, summarize=%d).",
+			transcribeRetryAttempts, summarizeRetryAttempts);
 
 		// Push to Notion + Calendar in the background
 		pushIntegrations(summary);
@@ -96,10 +113,12 @@ async function processMeeting(audioFilePath, meetingId) {
 			source: "assemblyai",
 			transcript: assemblyTranscript.text,
 			summary,
+			retry_attempts: { transcribe: transcribeRetryAttempts, summarize: summarizeRetryAttempts },
 		};
 	} catch (summarizeError) {
+		summarizeRetryAttempts = summarizeError?.retry_attempts || 0;
 		const reason = summarizeError?.message || String(summarizeError);
-		console.warn("[Orchestrator] AssemblyAI LeMUR failed: %s", reason);
+		console.warn("[Orchestrator] AssemblyAI LeMUR failed after %d attempt(s): %s", summarizeRetryAttempts, reason);
 		console.info("[Orchestrator] Using Ollama to summarize AssemblyAI transcript…");
 
 		// ── 3. LeMUR failed — use Ollama summarization with AssemblyAI transcript ─
@@ -117,6 +136,7 @@ async function processMeeting(audioFilePath, meetingId) {
 				transcript: assemblyTranscript.text,
 				summary,
 				fallbackReason: `LeMUR unavailable: ${reason}`,
+				retry_attempts: { transcribe: transcribeRetryAttempts, summarize: summarizeRetryAttempts },
 			};
 		} catch (ollamaError) {
 			const ollamaReason = ollamaError?.message || String(ollamaError);
@@ -129,6 +149,7 @@ async function processMeeting(audioFilePath, meetingId) {
 				transcript: assemblyTranscript.text,
 				summary: null,
 				summaryError: `LeMUR: ${reason} | Ollama: ${ollamaReason}`,
+				retry_attempts: { transcribe: transcribeRetryAttempts, summarize: summarizeRetryAttempts },
 			};
 		}
 	}

@@ -12,6 +12,7 @@
  */
 const { Client } = require('@notionhq/client');
 const { NOTION_API_KEY, NOTION_DATABASE_ID } = require('../config');
+const { withRetry } = require('./retry');
 
 // ── Config validation (logged once at startup) ──
 const hasNotionConfig = Boolean(NOTION_API_KEY && NOTION_DATABASE_ID);
@@ -173,7 +174,11 @@ function buildPageChildren(summaryText, actionItems) {
   if (items.length > 0) {
     for (const item of items) {
       const taskText = (item.task || '').trim() || '—';
-      const deadlineText = (item.deadline || '').trim() || '—';
+      // BUG 2 fix: replace null/undefined/empty deadline with fallback text
+      let deadlineText = (item.deadline || '').trim();
+      if (!deadlineText) {
+        deadlineText = 'No deadline mentioned';
+      }
       tableRows.push({
         object: 'block',
         type: 'table_row',
@@ -261,14 +266,18 @@ async function createMeetingPage({ meeting_date, summary, action_items } = {}) {
     children,
   };
 
-  // 6. Create the page
+  // 6. Create the page (with retry for transient/5xx errors)
   try {
-    const response = await notion.pages.create(payload);
-    console.info(`[NotionService] Page created: "${title}" (${response.id})`);
-    return { success: true, pageId: response.id };
+    const response = await withRetry(
+      () => notion.pages.create(payload),
+      3,   // maxRetries
+      1000 // baseDelayMs → 1s, 2s, 4s
+    );
+    console.info(`[NotionService] Page created: "${title}" (${response.id}) | retries=${response.retry_attempts || 1}`);
+    return { success: true, pageId: response.id, retry_attempts: response.retry_attempts || 1 };
   } catch (err) {
     console.error('[NotionService] Page creation failed:', err?.message);
-    return { success: false, error: err?.message || 'Notion API error' };
+    return { success: false, error: err?.message || 'Notion API error', retry_attempts: err?.retry_attempts || 0 };
   }
 }
 

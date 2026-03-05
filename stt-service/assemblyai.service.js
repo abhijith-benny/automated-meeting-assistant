@@ -93,11 +93,11 @@ const LEMUR_PROMPT = `You are a meeting-transcript processor. Analyze the transc
 
 EXTRACTION RULES:
 1. cleaned_transcript — Full transcript with grammar / punctuation corrected. Preserve all original content, speaker labels, and meaning.
-2. summary — Detailed, comprehensive summary covering ALL major topics, discussions, decisions, conclusions, timelines, and milestones. Be thorough; do NOT truncate.
+2. summary — Write a summary in clear paragraphs. The first paragraph should state the main topic and decisions made. The second paragraph should list key discussion points. Keep the summary under 150 words total.
 3. action_items — EVERY task, action item, scheduled work, milestone, or request mentioned.
-   • task: concise description of what needs to be done.
+   • task: Each task must be a SHORT concise action item of maximum 10 words. Format: [Person] - [action verb] [what]. Example: 'John - deliver design assets', 'Mike - confirm launch readiness', 'Alex - submit cloud proposal'. Do NOT copy full sentences from the transcript.
    • responsible: person/team exactly as mentioned, or "" if not stated.
-   • deadline: date exactly as stated if explicitly linked to the task, or "" if none.
+   • deadline: For each action item, you MUST extract a deadline if one is mentioned. If no deadline is mentioned for a task, write 'No deadline mentioned'. Never return null or empty string for deadline.
 
 OUTPUT (only valid JSON, no markdown):
 {"cleaned_transcript":"","summary":"","action_items":[{"task":"","responsible":"","deadline":""}]}`;

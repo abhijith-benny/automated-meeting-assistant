@@ -1,7 +1,36 @@
+// ── Always load nlp-service .env so Groq credentials are available ──
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+const chrono = require('chrono-node');
+
 const OLLAMA_URL = 'http://localhost:11434/api/generate';
 const OLLAMA_MODEL = 'phi';
 const REQUEST_TIMEOUT_MS = 300000;
 const MIN_TRANSCRIPT_LENGTH = 50; // characters
+
+// ── Map-reduce thresholds ──
+const MAP_REDUCE_WORD_THRESHOLD = 3000;
+const CHUNK_SIZE_WORDS = 800;
+const CHUNK_OVERLAP_WORDS = 100;
+const PER_CHUNK_TIMEOUT_MS = 240_000; // 4 min per chunk
+
+const Groq = require('groq-sdk');
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+
+// Lazy Groq client — created on first use so env vars are always available
+let _groqClient = null;
+let _groqClientInitialized = false;
+function getGroqClient() {
+  if (!_groqClientInitialized) {
+    _groqClientInitialized = true;
+    if (process.env.GROQ_API_KEY) {
+      _groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      console.info('[NLP] Groq client initialized with model:', GROQ_MODEL);
+    } else {
+      console.warn('[NLP] GROQ_API_KEY not set — Groq unavailable, will use Ollama');
+    }
+  }
+  return _groqClient;
+}
 
 function preprocessTranscript(text) {
 	if (typeof text !== 'string') return '';
@@ -19,12 +48,12 @@ function buildPrompt(transcriptText) {
 
 EXTRACTION RULES:
 1. cleaned_transcript: Full transcript with grammar and punctuation corrected. Preserve all original content, speaker labels, and meaning. Do not remove, summarize, or paraphrase any part.
-2. summary: Write a detailed, comprehensive summary covering ALL major topics, discussions, decisions, conclusions, timelines, and milestones mentioned in the meeting. The summary MUST be thorough — there is NO sentence limit. It should be proportional to the meeting length and complexity. Do NOT truncate or abbreviate. Include every important point.
+2. summary: Write a DETAILED and COMPREHENSIVE summary in clear paragraphs (at least 150 words, up to 300 words). The first paragraph should state the meeting purpose, main topics, and key decisions. The second paragraph should describe each discussion point in detail. The third paragraph should mention any follow-up plans. Do NOT truncate or shorten the summary.
 3. action_items: Extract EVERY task, action item, scheduled work, milestone, or request mentioned in the transcript. Be thorough — do not miss any. Apply these rules strictly:
-   - task: Clearly describe what needs to be done in a concise sentence.
+   - task: Each task must be a SHORT concise action item of maximum 10 words. Format: [Person] - [action verb] [what]. Example: 'John - deliver design assets', 'Mike - confirm launch readiness', 'Alex - submit cloud proposal'. Do NOT copy full sentences from the transcript.
    - responsible: Name of the person or team responsible, exactly as mentioned. Use "" if not mentioned or ambiguous.
-   - deadline: If a date or timeframe is explicitly and directly associated with this specific task in the transcript, include it exactly as stated. Use "" only if NO date is linked to the task. Every task that has a date mentioned alongside it MUST have that date as its deadline.
-   - CRITICAL: A deadline must NEVER appear without a task. But if a task has a date mentioned with it (e.g., "complete X by March 5" or "X is scheduled for March 1"), that date IS the deadline for that task — do NOT leave it blank.
+   - deadline: For each action item, you MUST extract a deadline if one is mentioned anywhere in the transcript for that task. If a relative date is used (e.g., "next Monday", "by Thursday", "this Friday"), convert it to an absolute date like "March 10, 2026". Today's date is ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}. If no deadline is mentioned for a task, write "No deadline mentioned". Never return null or empty string for deadline.
+   - CRITICAL: A deadline must NEVER appear without a task. But if a task has a date mentioned with it (e.g., "complete X by March 5" or "X is scheduled for March 1" or "X by next Monday"), that date IS the deadline for that task — you MUST resolve it to an actual date and include it. Do NOT leave it blank.
 
 OUTPUT RULES:
 - Return ONLY valid JSON. No markdown, no code fences, no explanations.
@@ -342,7 +371,7 @@ function normalizeResult(parsed, originalTranscript) {
 
 	// ── Post-process: extract deadlines from task text if LLM left them blank ──
 	const deadlineDatePattern =
-		/(?:before|by|until|due|on|targeting|scheduled\s+(?:for|to\s+be\s+completed\s+by))\s+(?:.*?\s+)?((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4})/i;
+  /\b(?:by|before|until|due|on|targeting|scheduled\s+for)\s+((?:next\s+)?(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4}|tomorrow|end\s+of\s+(?:day|week|month|sprint)|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i;
 	for (const item of actionItems) {
 		if (item.task && !item.deadline) {
 			const match = item.task.match(deadlineDatePattern);
@@ -352,6 +381,44 @@ function normalizeResult(parsed, originalTranscript) {
 			}
 		}
 	}
+	// Secondary pass — extract short deadline phrases from task text
+const shortDeadlinePattern = /\b(by\s+(?:next\s+)?(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)|by\s+(?:end\s+of\s+)?(?:this\s+)?(?:week|month)|tomorrow|by\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})/i;
+
+for (const item of actionItems) {
+  if (item.task && (!item.deadline || item.deadline === 'No deadline mentioned' || item.deadline === '')) {
+    const match = item.task.match(shortDeadlinePattern);
+    if (match) {
+      item.deadline = match[1].trim();
+      // Clean the deadline phrase from the task text
+      item.task = item.task.replace(match[0], '').replace(/,\s*$/, '').trim();
+      console.info(`[NLP] Extracted short deadline "${item.deadline}" from task text`);
+    }
+  }
+}
+
+// Final pass — shorten tasks that are still too long and resolve relative dates with chrono
+for (const item of actionItems) {
+  if (item.task) {
+    const words = item.task.split(' ');
+    if (words.length > 12) {
+      item.task = words.slice(0, 10).join(' ');
+    }
+  }
+  if (!item.deadline || item.deadline.trim() === '' || item.deadline === 'No deadline mentioned') {
+    item.deadline = 'No deadline mentioned';
+  } else {
+    // Resolve relative/natural-language deadlines to actual dates using chrono-node
+    const resolvedDate = chrono.parseDate(item.deadline, new Date());
+    if (resolvedDate && !isNaN(resolvedDate.getTime())) {
+      const month = MONTH_FULL_NAMES[resolvedDate.getMonth()];
+      const day = resolvedDate.getDate();
+      const year = resolvedDate.getFullYear();
+      const resolvedStr = `${month} ${day}, ${year}`;
+      console.info(`[NLP] Resolved relative deadline "${item.deadline}" → "${resolvedStr}"`);
+      item.deadline = resolvedStr;
+    }
+  }
+}
 
 	// ── Fallback: extract action items if LLM missed them ──
 	if (actionItems.length === 0 || actionItems.every((a) => !a.task)) {
@@ -381,6 +448,181 @@ function normalizeResult(parsed, originalTranscript) {
 	return validateDates(result);
 }
 
+/* ================================================================== */
+/*  Map-Reduce helpers                                                 */
+/* ================================================================== */
+
+/**
+ * Split text into overlapping chunks of approximately `chunkSize` words
+ * with `overlap` words shared between consecutive chunks.
+ */
+function splitIntoChunks(text, chunkSize = CHUNK_SIZE_WORDS, overlap = CHUNK_OVERLAP_WORDS) {
+	const words = text.split(/\s+/);
+	const chunks = [];
+	let start = 0;
+	while (start < words.length) {
+		const end = Math.min(start + chunkSize, words.length);
+		chunks.push(words.slice(start, end).join(' '));
+		if (end >= words.length) break;
+		start += chunkSize - overlap;
+	}
+	return chunks;
+}
+
+/**
+ * Send a single prompt to Ollama with a per-chunk timeout.
+ */
+async function ollamaGenerate(prompt, timeoutMs = PER_CHUNK_TIMEOUT_MS) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const response = await fetch(OLLAMA_URL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			signal: controller.signal,
+			body: JSON.stringify({
+				model: OLLAMA_MODEL,
+				prompt,
+				stream: false,
+				format: 'json',
+			}),
+		});
+		if (!response.ok) {
+			const errorBody = await response.text().catch(() => '');
+			throw new Error(`Ollama request failed (${response.status}): ${errorBody || response.statusText}`);
+		}
+		const data = await response.json();
+		if (!data || typeof data.response !== 'string') {
+			throw new Error('Unexpected Ollama response shape: missing "response" text.');
+		}
+		return data.response;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function groqGenerate(prompt) {
+  const client = getGroqClient();
+  if (!client) throw new Error('Groq API key not configured');
+  const completion = await client.chat.completions.create({
+    messages: [{ role: 'user', content: prompt }],
+    model: GROQ_MODEL,
+    temperature: 0,
+    response_format: { type: 'json_object' },
+  });
+  const text = completion.choices[0]?.message?.content;
+  if (!text) throw new Error('Groq returned empty response');
+  return text;
+}
+
+async function generateWithFallback(prompt, timeoutMs) {
+  if (getGroqClient()) {
+    try {
+      console.info('[NLP] Using Groq (%s)', GROQ_MODEL);
+      return await groqGenerate(prompt);
+    } catch (err) {
+      console.warn(`[NLP] Groq failed: ${err.message} — falling back to Ollama`);
+    }
+  }
+  console.info('[NLP] Using Ollama');
+  return await ollamaGenerate(prompt, timeoutMs);
+}
+
+/**
+ * MAP step: summarize a single chunk.
+ */
+async function summarizeChunk(chunkText, index, total) {
+	const prompt = `You are a meeting-transcript summarizer. This is chunk ${index + 1} of ${total}.
+Summarize the following transcript chunk. Return ONLY valid JSON with these fields:
+{"chunk_summary": "<concise summary of this chunk>", "action_items": [{"task":"","responsible":"","deadline":""}]}
+
+Transcript chunk:
+"""${chunkText}"""`;
+
+	console.info(`[NLP/MapReduce] MAP chunk ${index + 1}/${total} | words=${chunkText.split(/\s+/).length}`);
+	const raw = await generateWithFallback(prompt, PER_CHUNK_TIMEOUT_MS);
+	try {
+		return parseModelJson(raw);
+	} catch {
+		// If JSON parsing fails, return raw text as summary
+		return { chunk_summary: raw.trim(), action_items: [] };
+	}
+}
+
+/**
+ * REDUCE step: combine chunk summaries into one final output.
+ */
+async function reduceSummaries(chunkResults, originalTranscript) {
+	const combinedSummaries = chunkResults
+		.map((r, i) => `[Chunk ${i + 1}]: ${r.chunk_summary || ''}`)
+		.join('\n\n');
+
+	// Gather all action items from map step
+	const allActions = [];
+	for (const r of chunkResults) {
+		if (Array.isArray(r.action_items)) {
+			allActions.push(...r.action_items);
+		}
+	}
+
+	const reducePrompt = `You are a meeting-transcript processor. You have already summarized a long meeting in chunks.
+Below are the chunk summaries and action items gathered so far.
+
+CHUNK SUMMARIES:
+${combinedSummaries}
+
+PREVIOUSLY EXTRACTED ACTION ITEMS:
+${JSON.stringify(allActions)}
+
+Now combine everything into a single, coherent, comprehensive result. Return ONLY valid JSON:
+{"cleaned_transcript": "", "summary": "<unified detailed summary covering ALL topics>", "action_items": [{"task":"","responsible":"","deadline":""}]}
+
+RULES:
+- The summary must be thorough and comprehensive — combine and deduplicate the chunk summaries.
+- Merge and deduplicate action items. Remove exact duplicates but keep all unique tasks.
+- For cleaned_transcript, leave it as an empty string (the original transcript is too long to repeat here).
+- Return ONLY valid JSON, no markdown.`;
+
+	console.info(`[NLP/MapReduce] REDUCE | chunks=${chunkResults.length}, collected_actions=${allActions.length}`);
+	const raw = await generateWithFallback(reducePrompt, REQUEST_TIMEOUT_MS);
+	const parsed = parseModelJson(raw);
+
+	// Restore the original cleaned transcript since reduce can't reproduce it
+	if (!parsed.cleaned_transcript || parsed.cleaned_transcript.trim() === '') {
+		parsed.cleaned_transcript = originalTranscript;
+	}
+
+	return parsed;
+}
+
+/**
+ * Full map-reduce summarization pipeline.
+ */
+async function mapReduceSummarize(cleanedTranscript) {
+	const chunks = splitIntoChunks(cleanedTranscript);
+	console.info(`[NLP/MapReduce] Splitting transcript into ${chunks.length} chunks (threshold=${MAP_REDUCE_WORD_THRESHOLD} words)`);
+
+	// MAP: summarize each chunk
+	const chunkResults = [];
+	for (let i = 0; i < chunks.length; i++) {
+		try {
+			const result = await summarizeChunk(chunks[i], i, chunks.length);
+			chunkResults.push(result);
+		} catch (err) {
+			console.warn(`[NLP/MapReduce] Chunk ${i + 1} failed: ${err.message} — using raw text`);
+			chunkResults.push({ chunk_summary: chunks[i].substring(0, 500), action_items: [] });
+		}
+	}
+
+	// REDUCE: combine all chunk summaries
+	const reduced = await reduceSummaries(chunkResults, cleanedTranscript);
+	return reduced;
+}
+
+/* ================================================================== */
+/*  Main entry point                                                   */
+/* ================================================================== */
+
 async function summarizeTranscript(transcriptText) {
 	if (typeof transcriptText !== 'string' || !transcriptText.trim()) {
 		throw new Error('transcriptText must be a non-empty string.');
@@ -391,54 +633,36 @@ async function summarizeTranscript(transcriptText) {
 		throw new Error('Transcript too short or poor quality.');
 	}
 
-	// Try once, then retry a single time on failure
-	let lastError = null;
-	for (let attempt = 1; attempt <= 2; attempt += 1) {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-		try {
-			console.info(`[NLP] Sending transcript to LLM (attempt ${attempt}) | length=${cleaned.length}`);
-			const response = await fetch(OLLAMA_URL, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				signal: controller.signal,
-				body: JSON.stringify({
-					model: OLLAMA_MODEL,
-					prompt: buildPrompt(cleaned),
-					stream: false,
-					format: 'json',
-				}),
-			});
+	const wordCount = cleaned.split(/\s+/).length;
+	const useMapReduce = wordCount > MAP_REDUCE_WORD_THRESHOLD;
+	const method = useMapReduce ? 'map_reduce' : 'single_pass';
 
-			if (!response.ok) {
-				const errorBody = await response.text().catch(() => '');
-				throw new Error(`Ollama request failed (${response.status}): ${errorBody || response.statusText}`);
-			}
+	console.info(`[NLP] Summarization method: ${method} | words=${wordCount} | threshold=${MAP_REDUCE_WORD_THRESHOLD}`);
 
-			const data = await response.json();
-			if (!data || typeof data.response !== 'string') {
-				throw new Error('Unexpected Ollama response shape: missing "response" text.');
+	if (useMapReduce) {
+		// ── Map-Reduce path ──
+		let lastError = null;
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			try {
+				console.info(`[NLP] Map-reduce attempt ${attempt}`);
+				const parsed = await mapReduceSummarize(cleaned);
+				const result = normalizeResult(parsed, cleaned);
+				result.summarization_method = 'map_reduce';
+				return result;
+			} catch (error) {
+				lastError = error;
+				console.warn(`[NLP] Map-reduce attempt ${attempt} failed: ${error.message}`);
+				if (attempt === 2) throw lastError;
 			}
-
-			const parsed = parseModelJson(data.response);
-			return normalizeResult(parsed, cleaned);
-		} catch (error) {
-			clearTimeout(timeout);
-			if (error?.name === 'AbortError') {
-				lastError = new Error(`Ollama request timed out after ${REQUEST_TIMEOUT_MS}ms.`);
-			} else {
-				lastError = new Error(`Failed to summarize transcript: ${error?.message || String(error)}`);
-			}
-			console.warn(`[NLP] Summarization attempt ${attempt} failed: ${lastError.message}`);
-			if (attempt === 2) {
-				// graceful failure after retry
-				throw lastError;
-			}
-			// otherwise loop to retry
-		} finally {
-			clearTimeout(timeout);
 		}
 	}
+
+	// ── Single-pass path ──
+	const rawResponse = await generateWithFallback(buildPrompt(cleaned), REQUEST_TIMEOUT_MS);
+	const parsed = parseModelJson(rawResponse);
+	const result = normalizeResult(parsed, cleaned);
+	result.summarization_method = 'single_pass';
+	return result;
 }
 
 module.exports = { summarizeTranscript, isValidDate };
