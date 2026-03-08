@@ -48,11 +48,26 @@ async function pushToIntegrations(result) {
 
 		for (const item of result.action_items) {
 			if (item.deadline) {
-				// Parse the deadline — try native Date first, fall back to chrono-node
+				// Parse the deadline — try native Date first, then handle "this [weekday]" special case
 				let deadlineDate = new Date(item.deadline);
 				if (isNaN(deadlineDate.getTime())) {
-					// Try chrono-node for relative dates like "next Monday", "in two weeks"
-					deadlineDate = chrono.parseDate(item.deadline, new Date());
+					// Handle "this [weekday]" when it matches today's weekday
+					const today = new Date();
+					const todayWeekday = today.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+					const weekdayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+					const todayWeekdayName = weekdayNames[todayWeekday];
+					
+					const thisWeekdayPattern = new RegExp(`\\bthis\\s+(${weekdayNames.join('|')})\\b`, 'i');
+					const match = item.deadline.match(thisWeekdayPattern);
+					
+					if (match && match[1].toLowerCase() === todayWeekdayName) {
+						// "this Thursday" and today is Thursday → use today's date
+						deadlineDate = new Date(today);
+						console.info(`[Integration] "this ${match[1]}" matches today (${todayWeekdayName}) → using today's date`);
+					} else {
+						// Try chrono-node for other relative dates like "next Monday", "in two weeks"
+						deadlineDate = chrono.parseDate(item.deadline, new Date());
+					}
 				}
 				if (!deadlineDate || isNaN(deadlineDate.getTime())) {
 					console.warn(`[Integration] Skipping unparseable deadline: "${item.deadline}"`);

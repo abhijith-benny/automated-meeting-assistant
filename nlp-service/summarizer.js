@@ -407,8 +407,25 @@ for (const item of actionItems) {
   if (!item.deadline || item.deadline.trim() === '' || item.deadline === 'No deadline mentioned') {
     item.deadline = 'No deadline mentioned';
   } else {
-    // Resolve relative/natural-language deadlines to actual dates using chrono-node
-    const resolvedDate = chrono.parseDate(item.deadline, new Date());
+    // Handle "this [weekday]" when it matches today's weekday
+    const today = new Date();
+    const todayWeekday = today.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+    const weekdayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const todayWeekdayName = weekdayNames[todayWeekday];
+    
+    const thisWeekdayPattern = new RegExp(`\\bthis\\s+(${weekdayNames.join('|')})\\b`, 'i');
+    const match = item.deadline.match(thisWeekdayPattern);
+    
+    let resolvedDate;
+    if (match && match[1].toLowerCase() === todayWeekdayName) {
+      // "this Thursday" and today is Thursday → use today's date
+      resolvedDate = new Date(today);
+      console.info(`[NLP] "this ${match[1]}" matches today (${todayWeekdayName}) → using today's date`);
+    } else {
+      // Use chrono-node for other relative/natural-language deadlines
+      resolvedDate = chrono.parseDate(item.deadline, new Date());
+    }
+    
     if (resolvedDate && !isNaN(resolvedDate.getTime())) {
       const month = MONTH_FULL_NAMES[resolvedDate.getMonth()];
       const day = resolvedDate.getDate();
