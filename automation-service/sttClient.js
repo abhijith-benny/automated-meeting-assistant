@@ -9,6 +9,10 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+
+// ── Session guard: prevent duplicate STT+NLP pipeline runs per meeting ──
+let isPipelineActive = false;
+let activePipelineMeetingId = null;
 const NLP_TRANSCRIPTS_DIR = process.env.NLP_TRANSCRIPTS_DIR || path.join(__dirname, "..", "nlp-service", "transcripts");
 
 function assertValidInput(meetingId, audioFilePath) {
@@ -23,6 +27,14 @@ function assertValidInput(meetingId, audioFilePath) {
 
 async function triggerTranscription(meetingId, audioFilePath) {
 	assertValidInput(meetingId, audioFilePath);
+
+	// ── Pipeline guard: reject if already processing a meeting ──
+	if (isPipelineActive) {
+		console.warn(`[STT] Pipeline already active for meeting "${activePipelineMeetingId}" — skipping duplicate request for "${meetingId}"`);
+		throw new Error(`STT+NLP pipeline is already active for meeting "${activePipelineMeetingId}". Duplicate request rejected.`);
+	}
+	isPipelineActive = true;
+	activePipelineMeetingId = meetingId;
 
 	console.info("[STT] Transcription request started", {
 		meetingId,
@@ -65,6 +77,10 @@ async function triggerTranscription(meetingId, audioFilePath) {
 				transcriptLength: transcriptText.length,
 			});
 
+			// ── Pipeline guard: release on success ──
+			isPipelineActive = false;
+			activePipelineMeetingId = null;
+
 			return payload;
 		} catch (error) {
 			lastError = error;
@@ -81,6 +97,10 @@ async function triggerTranscription(meetingId, audioFilePath) {
 			clearTimeout(timeout);
 		}
 	}
+
+	// ── Pipeline guard: release on failure ──
+	isPipelineActive = false;
+	activePipelineMeetingId = null;
 
 	if (lastError?.name === "AbortError") {
 		throw new Error(`STT request timed out after ${DEFAULT_TIMEOUT_MS}ms.`);

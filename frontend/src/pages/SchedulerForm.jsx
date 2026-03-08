@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import DatePicker from 'react-datepicker'
 import 'react-datepicker/dist/react-datepicker.css'
 import * as meetingAPI from '../api/meeting'
@@ -9,6 +9,7 @@ export default function SchedulerForm() {
   const [status, setStatus] = useState('idle') // idle, scheduled, joining, success, error
   const [message, setMessage] = useState('')
   const [scheduledMeetings, setScheduledMeetings] = useState([])
+  const joiningRef = useRef(false) // prevent double-submit
 
   useEffect(() => {
     // Check for scheduled meetings every second
@@ -39,6 +40,13 @@ export default function SchedulerForm() {
   }
 
   async function joinMeetingNow(meetingLink, scheduledId = null) {
+    // Prevent double-submit
+    if (joiningRef.current) {
+      console.log('Join already in progress, ignoring duplicate call')
+      return
+    }
+    joiningRef.current = true
+
     setStatus('joining')
     setMessage(scheduledId ? `⏰ Time to join! Starting browser...` : 'Joining meeting...')
 
@@ -71,6 +79,8 @@ export default function SchedulerForm() {
       console.error('Failed to join:', error)
       setStatus('error')
       setMessage(`❌ Failed to join meeting: ${error.message}`)
+    } finally {
+      joiningRef.current = false
     }
   }
 
@@ -78,13 +88,14 @@ export default function SchedulerForm() {
     e.preventDefault()
     
     if (!link) {
-      alert('Please enter a Google Meet link')
+      alert('Please enter a meeting link')
       return
     }
 
-    // Validate it's a Google Meet link
-    if (!link.includes('meet.google.com')) {
-      alert('Please enter a valid Google Meet link')
+    // Validate supported platforms: Google Meet, Zoom, Teams
+    const supported = /(meet\.google\.com|zoom\.us|app\.zoom\.us|teams\.microsoft\.com)/i
+    if (!supported.test(link)) {
+      alert('Please enter a valid Google Meet, Zoom, or Teams meeting link')
       return
     }
 
@@ -136,11 +147,11 @@ export default function SchedulerForm() {
 
       <form onSubmit={handleSubmit}>
         <div className="field">
-          <label>Google Meet Link</label>
+          <label>Meeting Link (Google Meet / Zoom / Teams)</label>
           <input 
             value={link} 
             onChange={(e) => setLink(e.target.value)} 
-            placeholder="https://meet.google.com/xxx-xxxx-xxx" 
+            placeholder="https://meet.google.com/... or https://zoom.us/... or https://teams.microsoft.com/..." 
             required 
             disabled={status === 'joining'}
           />
