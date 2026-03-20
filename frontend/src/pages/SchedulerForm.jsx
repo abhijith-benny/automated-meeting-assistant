@@ -9,6 +9,7 @@ export default function SchedulerForm() {
   const [status, setStatus] = useState('idle') // idle, scheduled, joining, success, error
   const [message, setMessage] = useState('')
   const [scheduledMeetings, setScheduledMeetings] = useState([])
+  const [processingMode, setProcessingMode] = useState('cloud')
   const joiningRef = useRef(false) // prevent double-submit
 
   useEffect(() => {
@@ -29,7 +30,7 @@ export default function SchedulerForm() {
         
         // If meeting time has arrived, join it
         if (meetingTime <= now && !meeting.joined) {
-          joinMeetingNow(meeting.link, meeting.id)
+          joinMeetingNow(meeting.link, meeting.id, meeting.processing_mode)
           return false // Remove from scheduled list
         }
         return true
@@ -39,13 +40,16 @@ export default function SchedulerForm() {
     })
   }
 
-  async function joinMeetingNow(meetingLink, scheduledId = null) {
+  async function joinMeetingNow(meetingLink, scheduledId = null, meetingProcessingMode = null) {
     // Prevent double-submit
     if (joiningRef.current) {
       console.log('Join already in progress, ignoring duplicate call')
       return
     }
     joiningRef.current = true
+
+    // Use the meeting's own mode if supplied (scheduled meetings), else current toggle
+    const modeToUse = meetingProcessingMode || processingMode
 
     setStatus('joining')
     setMessage(scheduledId ? `⏰ Time to join! Starting browser...` : 'Joining meeting...')
@@ -58,7 +62,8 @@ export default function SchedulerForm() {
       const result = await meetingAPI.start({
         url: meetingLink,
         braveExecutable,
-        userDataDir
+        userDataDir,
+        processing_mode: modeToUse
       })
 
       console.log('Join result:', result)
@@ -114,7 +119,8 @@ export default function SchedulerForm() {
         id: Date.now().toString(),
         link,
         time: meetingTime.toISOString(),
-        joined: false
+        joined: false,
+        processing_mode: processingMode
       }
       
       setScheduledMeetings(prev => [...prev, newMeeting])
@@ -155,6 +161,31 @@ export default function SchedulerForm() {
             required 
             disabled={status === 'joining'}
           />
+        </div>
+
+        {/* ── Processing Mode Toggle ── */}
+        <div className="field">
+          <label>Processing Mode</label>
+          <div className="mode-toggle-row">
+            <button
+              type="button"
+              className={`mode-card${processingMode === 'cloud' ? ' mode-card--active mode-card--cloud' : ''}`}
+              onClick={() => setProcessingMode('cloud')}
+            >
+              <span className="mode-card__icon">⚡</span>
+              <span className="mode-card__label">Fast Mode</span>
+              <span className="mode-card__sub">Cloud AI · Faster results</span>
+            </button>
+            <button
+              type="button"
+              className={`mode-card${processingMode === 'local' ? ' mode-card--active mode-card--local' : ''}`}
+              onClick={() => setProcessingMode('local')}
+            >
+              <span className="mode-card__icon">🛡️</span>
+              <span className="mode-card__label">Private Mode</span>
+              <span className="mode-card__sub">Runs locally · Data stays on device</span>
+            </button>
+          </div>
         </div>
 
         <div className="field">

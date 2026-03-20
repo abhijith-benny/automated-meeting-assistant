@@ -10,7 +10,7 @@ const { processMeeting } = require("./orchestrator");
  */
 async function transcribeMeetingController(req, res) {
 	try {
-		const { meetingId, audioFilePath } = req.body || {};
+		const { meetingId, audioFilePath, processing_mode } = req.body || {};
 
 		if (!meetingId) {
 			return res.status(400).json({
@@ -26,7 +26,7 @@ async function transcribeMeetingController(req, res) {
 			});
 		}
 
-		const result = await processMeeting(audioFilePath, meetingId);
+		const result = await processMeeting(audioFilePath, meetingId, processing_mode);
 
 		// Map to HTTP status: 200 on success, 502 if both pipelines failed.
 		const statusCode = result.success ? 200 : 502;

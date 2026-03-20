@@ -1,8 +1,9 @@
 // ── Always load nlp-service .env so Groq credentials are available ──
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const chrono = require('chrono-node');
+const http = require('http');
 
-const OLLAMA_URL = 'http://localhost:11434/api/generate';
+const OLLAMA_URL = 'http://127.0.0.1:11434/api/generate';
 const OLLAMA_MODEL = 'phi';
 const REQUEST_TIMEOUT_MS = 300000;
 const MIN_TRANSCRIPT_LENGTH = 50; // characters
@@ -488,34 +489,74 @@ function splitIntoChunks(text, chunkSize = CHUNK_SIZE_WORDS, overlap = CHUNK_OVE
 
 /**
  * Send a single prompt to Ollama with a per-chunk timeout.
+ * Uses Node http module instead of native fetch to avoid undici issues
+ * with long-running requests.
  */
 async function ollamaGenerate(prompt, timeoutMs = PER_CHUNK_TIMEOUT_MS) {
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
-	try {
-		const response = await fetch(OLLAMA_URL, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			signal: controller.signal,
-			body: JSON.stringify({
-				model: OLLAMA_MODEL,
-				prompt,
-				stream: false,
-				format: 'json',
-			}),
+	return new Promise((resolve, reject) => {
+		const url = new URL(OLLAMA_URL);
+		const jsonBody = JSON.stringify({
+			model: OLLAMA_MODEL,
+			prompt,
+			stream: false,
+			format: 'json',
 		});
-		if (!response.ok) {
-			const errorBody = await response.text().catch(() => '');
-			throw new Error(`Ollama request failed (${response.status}): ${errorBody || response.statusText}`);
-		}
-		const data = await response.json();
-		if (!data || typeof data.response !== 'string') {
-			throw new Error('Unexpected Ollama response shape: missing "response" text.');
-		}
-		return data.response;
-	} finally {
-		clearTimeout(timer);
-	}
+
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			req.destroy(new Error(`Ollama request timed out after ${timeoutMs}ms`));
+			reject(new Error(`Ollama request timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+
+		const req = http.request(
+			{
+				hostname: url.hostname,
+				port: url.port || 80,
+				path: url.pathname,
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Content-Length': Buffer.byteLength(jsonBody),
+				},
+			},
+			(res) => {
+				let raw = '';
+				res.setEncoding('utf8');
+				res.on('data', (chunk) => { raw += chunk; });
+				res.on('end', () => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(timer);
+
+					if (res.statusCode < 200 || res.statusCode >= 300) {
+						return reject(new Error(`Ollama request failed (${res.statusCode}): ${raw || res.statusMessage}`));
+					}
+
+					try {
+						const data = JSON.parse(raw);
+						if (!data || typeof data.response !== 'string') {
+							return reject(new Error('Unexpected Ollama response shape: missing "response" text.'));
+						}
+						resolve(data.response);
+					} catch (parseErr) {
+						reject(new Error(`Failed to parse Ollama response: ${parseErr.message}`));
+					}
+				});
+			},
+		);
+
+		req.on('error', (err) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			reject(err);
+		});
+
+		req.write(jsonBody);
+		req.end();
+	});
 }
 
 async function groqGenerate(prompt) {
@@ -532,7 +573,25 @@ async function groqGenerate(prompt) {
   return text;
 }
 
-async function generateWithFallback(prompt, timeoutMs) {
+// Ollama on CPU can be 5-10x slower than cloud APIs — use a generous timeout
+const OLLAMA_PRIVATE_TIMEOUT_MS = Number(process.env.OLLAMA_PRIVATE_TIMEOUT_MS || 900_000); // 15 min
+
+async function generateWithFallback(prompt, timeoutMs, processingMode) {
+  // In local/private mode, skip Groq entirely and use longer timeout
+  if (processingMode === 'local') {
+    const ollamaTimeout = Math.max(timeoutMs, OLLAMA_PRIVATE_TIMEOUT_MS);
+    console.info('[NLP] Private mode — skipping Groq, using Ollama directly (timeout=%ds)', ollamaTimeout / 1000);
+    console.info('[NLP] Using Ollama');
+    try {
+      return await ollamaGenerate(prompt, ollamaTimeout);
+    } catch (err) {
+      if (/ECONNREFUSED|fetch failed/i.test(err?.message || '')) {
+        throw new Error('Private mode requires Ollama running locally. Start with: ollama serve');
+      }
+      throw err;
+    }
+  }
+
   if (getGroqClient()) {
     try {
       console.info('[NLP] Using Groq (%s)', GROQ_MODEL);
@@ -548,7 +607,7 @@ async function generateWithFallback(prompt, timeoutMs) {
 /**
  * MAP step: summarize a single chunk.
  */
-async function summarizeChunk(chunkText, index, total) {
+async function summarizeChunk(chunkText, index, total, processingMode) {
 	const prompt = `You are a meeting-transcript summarizer. This is chunk ${index + 1} of ${total}.
 Summarize the following transcript chunk. Return ONLY valid JSON with these fields:
 {"chunk_summary": "<concise summary of this chunk>", "action_items": [{"task":"","responsible":"","deadline":""}]}
@@ -557,7 +616,7 @@ Transcript chunk:
 """${chunkText}"""`;
 
 	console.info(`[NLP/MapReduce] MAP chunk ${index + 1}/${total} | words=${chunkText.split(/\s+/).length}`);
-	const raw = await generateWithFallback(prompt, PER_CHUNK_TIMEOUT_MS);
+	const raw = await generateWithFallback(prompt, PER_CHUNK_TIMEOUT_MS, processingMode);
 	try {
 		return parseModelJson(raw);
 	} catch {
@@ -569,7 +628,7 @@ Transcript chunk:
 /**
  * REDUCE step: combine chunk summaries into one final output.
  */
-async function reduceSummaries(chunkResults, originalTranscript) {
+async function reduceSummaries(chunkResults, originalTranscript, processingMode) {
 	const combinedSummaries = chunkResults
 		.map((r, i) => `[Chunk ${i + 1}]: ${r.chunk_summary || ''}`)
 		.join('\n\n');
@@ -601,7 +660,7 @@ RULES:
 - Return ONLY valid JSON, no markdown.`;
 
 	console.info(`[NLP/MapReduce] REDUCE | chunks=${chunkResults.length}, collected_actions=${allActions.length}`);
-	const raw = await generateWithFallback(reducePrompt, REQUEST_TIMEOUT_MS);
+	const raw = await generateWithFallback(reducePrompt, REQUEST_TIMEOUT_MS, processingMode);
 	const parsed = parseModelJson(raw);
 
 	// Restore the original cleaned transcript since reduce can't reproduce it
@@ -615,7 +674,7 @@ RULES:
 /**
  * Full map-reduce summarization pipeline.
  */
-async function mapReduceSummarize(cleanedTranscript) {
+async function mapReduceSummarize(cleanedTranscript, processingMode) {
 	const chunks = splitIntoChunks(cleanedTranscript);
 	console.info(`[NLP/MapReduce] Splitting transcript into ${chunks.length} chunks (threshold=${MAP_REDUCE_WORD_THRESHOLD} words)`);
 
@@ -623,7 +682,7 @@ async function mapReduceSummarize(cleanedTranscript) {
 	const chunkResults = [];
 	for (let i = 0; i < chunks.length; i++) {
 		try {
-			const result = await summarizeChunk(chunks[i], i, chunks.length);
+			const result = await summarizeChunk(chunks[i], i, chunks.length, processingMode);
 			chunkResults.push(result);
 		} catch (err) {
 			console.warn(`[NLP/MapReduce] Chunk ${i + 1} failed: ${err.message} — using raw text`);
@@ -632,7 +691,7 @@ async function mapReduceSummarize(cleanedTranscript) {
 	}
 
 	// REDUCE: combine all chunk summaries
-	const reduced = await reduceSummaries(chunkResults, cleanedTranscript);
+	const reduced = await reduceSummaries(chunkResults, cleanedTranscript, processingMode);
 	return reduced;
 }
 
@@ -640,7 +699,7 @@ async function mapReduceSummarize(cleanedTranscript) {
 /*  Main entry point                                                   */
 /* ================================================================== */
 
-async function summarizeTranscript(transcriptText) {
+async function summarizeTranscript(transcriptText, processingMode) {
 	if (typeof transcriptText !== 'string' || !transcriptText.trim()) {
 		throw new Error('transcriptText must be a non-empty string.');
 	}
@@ -662,7 +721,7 @@ async function summarizeTranscript(transcriptText) {
 		for (let attempt = 1; attempt <= 2; attempt++) {
 			try {
 				console.info(`[NLP] Map-reduce attempt ${attempt}`);
-				const parsed = await mapReduceSummarize(cleaned);
+				const parsed = await mapReduceSummarize(cleaned, processingMode);
 				const result = normalizeResult(parsed, cleaned);
 				result.summarization_method = 'map_reduce';
 				return result;
@@ -675,7 +734,7 @@ async function summarizeTranscript(transcriptText) {
 	}
 
 	// ── Single-pass path ──
-	const rawResponse = await generateWithFallback(buildPrompt(cleaned), REQUEST_TIMEOUT_MS);
+	const rawResponse = await generateWithFallback(buildPrompt(cleaned), REQUEST_TIMEOUT_MS, processingMode);
 	const parsed = parseModelJson(rawResponse);
 	const result = normalizeResult(parsed, cleaned);
 	result.summarization_method = 'single_pass';

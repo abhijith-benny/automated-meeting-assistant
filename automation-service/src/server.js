@@ -84,9 +84,9 @@ app.post('/api/meetings', (req, res) => {
     return res.status(400).json({ error: validationError });
   }
 
-  const { url, userDataDir, braveExecutable } = req.body;
+  const { url, userDataDir, braveExecutable, processing_mode } = req.body;
   const platform = detectPlatform(url);
-  log.info('Platform detected', { platform, url });
+  log.info('Platform detected', { platform, url, processing_mode: processing_mode || 'cloud' });
 
   // Build argument list for the joinMeeting orchestrator
   const scriptPath = path.join(__dirname, 'joinMeeting.js');
@@ -112,6 +112,7 @@ app.post('/api/meetings', (req, res) => {
     const child = spawn(spawnCmd, spawnArgs, {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PROCESSING_MODE: processing_mode || 'cloud' },
     });
 
     const ts = Date.now();

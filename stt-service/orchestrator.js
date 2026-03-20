@@ -14,6 +14,7 @@
 const assemblyai = require("./assemblyai.service");
 const local = require("./local.service");
 const { withRetry } = require("./retry");
+const http = require("http");
 
 const NLP_INTEGRATIONS_URL =
 	process.env.NLP_INTEGRATIONS_URL || "http://localhost:7000/integrations/ingest";
@@ -26,20 +27,42 @@ const NLP_INTEGRATION_TIMEOUT_MS = 10_000; // 10 s — fire-and-forget, don't bl
 async function pushIntegrations(summary) {
 	if (!summary) return;
 	try {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), NLP_INTEGRATION_TIMEOUT_MS);
+		const url = new URL(NLP_INTEGRATIONS_URL);
+		const jsonBody = JSON.stringify(summary);
 
-		const res = await fetch(NLP_INTEGRATIONS_URL, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(summary),
-			signal: controller.signal,
+		const result = await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				req.destroy(new Error('Integration push timed out'));
+			}, NLP_INTEGRATION_TIMEOUT_MS);
+
+			const req = http.request(
+				{
+					hostname: url.hostname,
+					port: url.port || 80,
+					path: url.pathname + url.search,
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"Content-Length": Buffer.byteLength(jsonBody),
+					},
+				},
+				(res) => {
+					let raw = "";
+					res.setEncoding("utf8");
+					res.on("data", (chunk) => { raw += chunk; });
+					res.on("end", () => {
+						clearTimeout(timer);
+						resolve({ statusCode: res.statusCode, raw });
+					});
+				},
+			);
+			req.on("error", (err) => { clearTimeout(timer); reject(err); });
+			req.write(jsonBody);
+			req.end();
 		});
-		clearTimeout(timer);
 
-		if (!res.ok) {
-			const text = await res.text().catch(() => "");
-			console.warn("[Orchestrator] Integration push returned %d: %s", res.status, text);
+		if (result.statusCode < 200 || result.statusCode >= 300) {
+			console.warn("[Orchestrator] Integration push returned %d: %s", result.statusCode, result.raw);
 		} else {
 			console.info("[Orchestrator] Integration push accepted.");
 		}
@@ -53,15 +76,24 @@ async function pushIntegrations(summary) {
  *
  * @param {string} audioFilePath  Absolute path to the audio file.
  * @param {string} [meetingId]    Optional meeting identifier (used by local fallback).
- * @returns {Promise<{
- *   success: boolean,
- *   source: "assemblyai" | "assemblyai+ollama" | "local",
- *   transcript: string,
- *   summary: object,
- *   fallbackReason?: string
- * }>}
+ * @param {string} [processingMode] 'cloud' | 'local' — controls pipeline routing.
+ * @returns {Promise<{*}>}
  */
-async function processMeeting(audioFilePath, meetingId) {
+async function processMeeting(audioFilePath, meetingId, processingMode) {
+	const mode = (processingMode === 'local') ? 'local' : 'cloud';
+	const isPrivate = mode === 'local';
+	console.info("[Orchestrator] Processing mode: %s (privacy_mode=%s)", mode, isPrivate);
+
+	// ── LOCAL MODE: skip cloud services entirely ────────────────────────
+	if (isPrivate) {
+		console.info("[Orchestrator] Private mode — going directly to local Whisper + Ollama");
+		const result = await localFallback(audioFilePath, meetingId, 'User selected Private Mode', mode);
+		result.processing_mode = 'local';
+		result.privacy_mode = true;
+		return result;
+	}
+
+	// ── CLOUD MODE: existing AssemblyAI → fallback flow ─────────────────
 	let assemblyTranscript = null;
 	let transcribeRetryAttempts = 0;
 
@@ -85,8 +117,10 @@ async function processMeeting(audioFilePath, meetingId) {
 		console.warn("[Orchestrator] AssemblyAI transcription failed after %d attempt(s): %s", transcribeRetryAttempts, reason);
 
 		// Transcription failed — fall back to full local pipeline
-		const fallbackResult = await localFallback(audioFilePath, meetingId, reason);
+		const fallbackResult = await localFallback(audioFilePath, meetingId, reason, mode);
 		fallbackResult.retry_attempts = { transcribe: transcribeRetryAttempts };
+		fallbackResult.processing_mode = fallbackResult.processing_mode || 'cloud';
+		fallbackResult.privacy_mode = fallbackResult.privacy_mode || false;
 		return fallbackResult;
 	}
 
@@ -114,6 +148,8 @@ async function processMeeting(audioFilePath, meetingId) {
 			transcript: assemblyTranscript.text,
 			summary,
 			retry_attempts: { transcribe: transcribeRetryAttempts, summarize: summarizeRetryAttempts },
+			processing_mode: 'cloud',
+			privacy_mode: false,
 		};
 	} catch (summarizeError) {
 		summarizeRetryAttempts = summarizeError?.retry_attempts || 0;
@@ -123,7 +159,7 @@ async function processMeeting(audioFilePath, meetingId) {
 
 		// ── 3. LeMUR failed — use Ollama summarization with AssemblyAI transcript ─
 		try {
-			const summary = await local.summarize(assemblyTranscript.text);
+			const summary = await local.summarize(assemblyTranscript.text, mode);
 
 			console.info("[Orchestrator] AssemblyAI transcription + Ollama summarization succeeded.");
 
@@ -137,6 +173,8 @@ async function processMeeting(audioFilePath, meetingId) {
 				summary,
 				fallbackReason: `LeMUR unavailable: ${reason}`,
 				retry_attempts: { transcribe: transcribeRetryAttempts, summarize: summarizeRetryAttempts },
+				processing_mode: 'cloud',
+				privacy_mode: false,
 			};
 		} catch (ollamaError) {
 			const ollamaReason = ollamaError?.message || String(ollamaError);
@@ -150,6 +188,8 @@ async function processMeeting(audioFilePath, meetingId) {
 				summary: null,
 				summaryError: `LeMUR: ${reason} | Ollama: ${ollamaReason}`,
 				retry_attempts: { transcribe: transcribeRetryAttempts, summarize: summarizeRetryAttempts },
+				processing_mode: 'cloud',
+				privacy_mode: false,
 			};
 		}
 	}
@@ -158,12 +198,12 @@ async function processMeeting(audioFilePath, meetingId) {
 /**
  * Full local fallback: Whisper transcription + Ollama summarization.
  */
-async function localFallback(audioFilePath, meetingId, assemblyReason) {
+async function localFallback(audioFilePath, meetingId, assemblyReason, processingMode) {
 	console.info("[Orchestrator] Falling back to full local pipeline…");
 
 	try {
 		const transcript = await local.transcribe(audioFilePath, meetingId);
-		const summary = await local.summarize(transcript);
+		const summary = await local.summarize(transcript, processingMode);
 
 		console.info("[Orchestrator] Local pipeline succeeded.");
 

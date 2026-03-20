@@ -97,7 +97,9 @@ async function pushToIntegrations(result) {
 
 app.post('/summarize', async (req, res) => {
 	try {
-		const { transcript } = req.body || {};
+		const { transcript, processing_mode } = req.body || {};
+		const effectiveMode = processing_mode || 'cloud';
+		console.info('[NLP] /summarize called with processing_mode=%s', effectiveMode);
 
 		if (typeof transcript !== 'string' || !transcript.trim()) {
 			return res.status(400).json({
@@ -106,7 +108,7 @@ app.post('/summarize', async (req, res) => {
 			});
 		}
 
-		const result = await summarizeTranscript(transcript);
+		const result = await summarizeTranscript(transcript, effectiveMode);
 
 		// Fire integration push in the background (don't block the response)
 		pushToIntegrations(result).catch((err) =>

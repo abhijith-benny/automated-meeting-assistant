@@ -87,3 +87,23 @@ button[disabled]{opacity:.6;cursor:not-allowed}
 .datepicker-input:focus{outline:none;box-shadow:0 6px 14px rgba(37,99,235,0.06);border-color:var(--accent-600)}
 .react-datepicker-wrapper{width:100%}
 .react-datepicker__input-container input{width:100%}
+
+/* ── Processing Mode Toggle ─────────────────────────────────────── */
+.mode-toggle-row{display:flex;gap:10px}
+.mode-card{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:14px 10px;border-radius:var(--radius);border:2px solid #e5e7eb;
+  background:var(--card);cursor:pointer;transition:border-color .18s,box-shadow .18s,transform .12s;
+  font-family:inherit;color:#374151;
+}
+.mode-card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(17,24,39,0.06)}
+.mode-card--active.mode-card--cloud{border-color:var(--accent);background:rgba(37,99,235,0.04);box-shadow:0 0 0 3px rgba(37,99,235,0.12)}
+.mode-card--active.mode-card--local{border-color:var(--success);background:rgba(16,185,129,0.04);box-shadow:0 0 0 3px rgba(16,185,129,0.12)}
+.mode-card__icon{font-size:22px;line-height:1}
+.mode-card__label{font-weight:700;font-size:14px}
+.mode-card__sub{font-size:11px;color:var(--muted);text-align:center}
+
+/* ── Result Mode Badge ──────────────────────────────────────────── */
+.mode-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.mode-badge--cloud{background:rgba(37,99,235,0.1);color:#1e40af}
+.mode-badge--local{background:rgba(16,185,129,0.1);color:#065f46}
