@@ -25,8 +25,9 @@ function assertValidInput(meetingId, audioFilePath) {
 	}
 }
 
-async function triggerTranscription(meetingId, audioFilePath) {
+async function triggerTranscription(meetingId, audioFilePath, processingMode) {
 	assertValidInput(meetingId, audioFilePath);
+	const effectiveMode = processingMode || 'cloud';
 
 	// ── Pipeline guard: reject if already processing a meeting ──
 	if (isPipelineActive) {
@@ -41,6 +42,7 @@ async function triggerTranscription(meetingId, audioFilePath) {
 		audioFilePath,
 		endpoint: STT_ENDPOINT,
 		retries: DEFAULT_RETRIES,
+		processing_mode: effectiveMode,
 	});
 
 	let lastError;
@@ -53,6 +55,7 @@ async function triggerTranscription(meetingId, audioFilePath) {
 				meetingId,
 				audioFilePath,
 				controller,
+				processingMode: effectiveMode,
 			});
 
 			const transcriptText = typeof payload?.transcript === "string" ? payload.transcript : "";
@@ -62,7 +65,7 @@ async function triggerTranscription(meetingId, audioFilePath) {
 			let analysis = payload?.summary || null;
 			if (!analysis && transcriptText.trim()) {
 				console.info("[STT] Hybrid service returned no summary — calling NLP separately");
-				analysis = await runNlpAnalysisSafely(meetingId, transcriptText);
+				analysis = await runNlpAnalysisSafely(meetingId, transcriptText, effectiveMode);
 			} else if (analysis) {
 				console.info("[STT] Using summary from hybrid service (source: %s)", payload?.source || "unknown");
 				await saveAnalysisToFile(meetingId, analysis);
@@ -113,14 +116,14 @@ function normalizeMeetingId(meetingId) {
 	return String(meetingId).trim().replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-async function runNlpAnalysisSafely(meetingId, transcriptText) {
+async function runNlpAnalysisSafely(meetingId, transcriptText, processingMode) {
 	if (!transcriptText.trim()) {
 		console.warn("[NLP] Skipping summarization: transcript is empty.");
 		return null;
 	}
 
 	try {
-		const analysis = await requestNlpSummary(transcriptText);
+		const analysis = await requestNlpSummary(transcriptText, processingMode);
 		console.info("[NLP] Structured summary:", JSON.stringify(analysis, null, 2));
 		await saveAnalysisToFile(meetingId, analysis);
 		return analysis;
@@ -130,7 +133,7 @@ async function runNlpAnalysisSafely(meetingId, transcriptText) {
 	}
 }
 
-async function requestNlpSummary(transcriptText) {
+async function requestNlpSummary(transcriptText, processingMode) {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), NLP_TIMEOUT_MS);
 
@@ -138,7 +141,7 @@ async function requestNlpSummary(transcriptText) {
 		const response = await fetch(NLP_ENDPOINT, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ transcript: transcriptText }),
+			body: JSON.stringify({ transcript: transcriptText, processing_mode: processingMode || 'cloud' }),
 			signal: controller.signal,
 		});
 
@@ -175,8 +178,8 @@ async function saveAnalysisToFile(meetingId, analysis) {
 	console.info(`[NLP] Analysis saved to ${outputPath}`);
 }
 
-async function sendTranscriptionRequest({ meetingId, audioFilePath, controller }) {
-	const body = JSON.stringify({ meetingId, audioFilePath });
+async function sendTranscriptionRequest({ meetingId, audioFilePath, controller, processingMode }) {
+	const body = JSON.stringify({ meetingId, audioFilePath, processing_mode: processingMode || 'cloud' });
 
 	try {
 		const response = await fetch(STT_ENDPOINT, {

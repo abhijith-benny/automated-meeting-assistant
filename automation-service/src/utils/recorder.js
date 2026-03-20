@@ -93,6 +93,7 @@ class Recorder {
     const processToStop = this._process;
     const audioFilePath = this._outputPath;
     const meetingId = this._meetingId;
+    const processingMode = process.env.PROCESSING_MODE || 'cloud';
 
     this._process = null;
     this._outputPath = null;
@@ -132,8 +133,8 @@ class Recorder {
       }
 
       try {
-        log.info(`Starting transcription for meetingId=${meetingId}`);
-        const result = await triggerTranscription(meetingId, audioFilePath);
+        log.info(`Starting transcription for meetingId=${meetingId} processing_mode=${processingMode}`);
+        const result = await triggerTranscription(meetingId, audioFilePath, processingMode);
         const transcriptText = result?.transcript || '';
         log.info(`Transcription complete (${transcriptText.length} chars)`);
       } catch (err) {
